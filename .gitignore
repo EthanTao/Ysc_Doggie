@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Data & media (保留占位与汇总)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/processed/summary.md
+videos/*
+!videos/.gitkeep
+
+# MuJoCo 运行产物
+*.mjb
+*.log
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
