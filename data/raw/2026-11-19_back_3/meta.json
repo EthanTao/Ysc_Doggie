@@ -1,6 +1,6 @@
 {
   "run_id": "2026-11-19_back_3",
-  "date": "2026-11-19T13:37:21",
+  "date": "2026-11-19T14:11:53",
   "fall": "back",
   "scene": "flat",
   "model": "DeepRobotics Lite3 official MJCF (BSD-3), see sim/models/lite3/SOURCE.md",
@@ -72,59 +72,48 @@
     }
   },
   "result": {
-    "final_state": "S5_SAFE_FAULT",
-    "attempts": 2,
-    "fault_code": "E_STANDUP_NOT_UPRIGHT",
+    "final_state": "S0_MONITOR",
+    "attempts": 1,
+    "fault_code": null,
     "detected": true,
     "fall_kind": "back",
-    "fall_cue": "fast_path",
+    "fall_cue": "attitude",
     "order_safe_before_standup": true,
-    "latency_s": 0.155,
+    "latency_s": 0.305,
+    "standup_duration_s": 5.21,
     "transitions": [
       {
-        "t": 0.155,
+        "t": 0.305,
         "from": "S0_MONITOR",
         "to": "S1_SAFE_DAMPING",
-        "reason": "fall_confirmed:fast_path"
+        "reason": "fall_confirmed:attitude"
       },
       {
-        "t": 1.865,
+        "t": 1.69,
         "from": "S1_SAFE_DAMPING",
         "to": "S2_ASSESS",
         "reason": "settled"
       },
       {
-        "t": 1.87,
+        "t": 1.695,
         "from": "S2_ASSESS",
         "to": "S3_STANDUP",
         "reason": "attempt_1"
       },
       {
-        "t": 6.07,
+        "t": 5.895,
         "from": "S3_STANDUP",
-        "to": "S1_SAFE_DAMPING",
-        "reason": "retry_after_E_STANDUP_NOT_UPRIGHT"
+        "to": "S4_VERIFY",
+        "reason": "upright"
       },
       {
-        "t": 7.17,
-        "from": "S1_SAFE_DAMPING",
-        "to": "S2_ASSESS",
-        "reason": "settled"
-      },
-      {
-        "t": 9.175,
-        "from": "S2_ASSESS",
-        "to": "S3_STANDUP",
-        "reason": "attempt_2"
-      },
-      {
-        "t": 13.38,
-        "from": "S3_STANDUP",
-        "to": "S5_SAFE_FAULT",
-        "reason": "E_STANDUP_NOT_UPRIGHT"
+        "t": 6.9,
+        "from": "S4_VERIFY",
+        "to": "S0_MONITOR",
+        "reason": "recovered"
       }
     ],
     "timeout": false,
-    "recovered": false
+    "recovered": true
   }
 }
