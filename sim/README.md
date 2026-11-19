@@ -17,13 +17,16 @@
 
 ## 场景
 
-| 文件 | 用途 |
-|---|---|
-| `scenes/flat.xml` | 平地，正式 9 次测试 |
-| `scenes/step.xml` | 侧向 0.10 m 台阶，起身受阻 |
-| `scenes/slope.xml` | 5° 斜坡，阈值复核 |
-| `inject.py` | 前/后/左/右翻姿态注入 |
-| `standup.py` | 官方站立轨迹复刻（三次样条 + IK） |
+| 模型文件 | 用途 | 状态 |
+|---|---|---|
+| `models/lite3/Lite3.xml` | 平地，正式 9 次测试 | ✅ |
+| `models/lite3/Lite3_blocked.xml` | 趴地 + 上方矮障碍（模拟跌入设备底座下方），起身受阻 3 次 | ✅ |
+| 斜坡 5° | 阈值复核 | ⬜ 待建 |
+
+姿态注入与站立轨迹的实现见 `src/doggie/io/sim_backend.py`：
+
+- `place_fall(kind)`：`mj_geomDistance` 精确留 5 mm 间隙放置，支持前翻/后翻/侧翻（±65°+前向动量 1.5 rad/s）/趴地；
+- `StandUp`：官方两阶段三次样条 + IK（0.12→0.33 m，2 s + 2 s，kp=100/kd=2.5）。
 
 ## 注意
 

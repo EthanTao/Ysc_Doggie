@@ -1,0 +1,77 @@
+"""单次试验的组装与执行（供 scripts/run_trial.py 与 scripts/run_matrix.py 共用）。"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
+from .core.detector import FallDetector
+from .core.recovery_fsm import RecoveryFSM
+from .io.sim_backend import SimBackend
+from .supervisor import Supervisor
+from .utils.logger import TrialLogger
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def run_trial(
+    cfg: dict,
+    fall: str,
+    scene: str = "flat",
+    run_dir: Path | None = None,
+    video: Path | None = None,
+    max_time: float = 60.0,
+) -> dict:
+    """注入翻倒姿态并跑完整恢复流程，返回结果与元数据。"""
+    backend = SimBackend(cfg["sim"], scene=scene)
+    detector = FallDetector(cfg["detector"])
+    fsm = RecoveryFSM(cfg["fsm"], detector)
+
+    if fall in ("none", "stand"):
+        backend.place_standing()
+    else:
+        backend.place_fall(fall)
+
+    logger = TrialLogger(run_dir) if run_dir is not None else None
+
+    writer = None
+    renderer = None
+    frame_cb = None
+    if video is not None:
+        import imageio
+        import mujoco
+
+        writer = imageio.get_writer(str(video), fps=25, macro_block_size=None)
+        renderer = mujoco.Renderer(backend.model, 480, 640)
+        cam = mujoco.MjvCamera()
+        cam.distance = 1.6
+        cam.azimuth = 135
+        cam.elevation = -18
+        cam.lookat[:] = [0.15, 0.0, 0.22]
+
+        def frame_cb(t: float) -> None:
+            renderer.update_scene(backend.data, cam)
+            writer.append_data(renderer.render())
+
+    sup = Supervisor(backend, detector, fsm, logger=logger, frame_cb=frame_cb)
+    result = sup.run(max_time)
+
+    if writer is not None:
+        writer.close()
+
+    meta = {
+        "run_id": run_dir.name if run_dir is not None else "",
+        "date": datetime.now().isoformat(timespec="seconds"),
+        "fall": fall,
+        "scene": scene,
+        "model": "DeepRobotics Lite3 official MJCF (BSD-3), see sim/models/lite3/SOURCE.md",
+        "config": {
+            "detector": cfg["detector"],
+            "fsm": cfg["fsm"],
+            "sim": cfg["sim"],
+        },
+        "result": result,
+    }
+    if logger is not None:
+        logger.finish(meta)
+    return result

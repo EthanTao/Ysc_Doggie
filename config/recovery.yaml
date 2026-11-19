@@ -29,12 +29,13 @@ detector:
   recover_pitch_deg: 35.0
   recover_dwell_s: 0.50
 
-  # 辅助判据
-  quiet_omega_rad_s: 1.5
-  min_height_m: 0.20          # 仅仿真使用
+  # 辅助判据（趴地/仰翻时姿态角≈0，必须靠高度；LieDown 高度 0.12 在门限之上）
+  height_min_m: 0.10
+  height_dwell_s: 0.30
   use_height: true
   use_contact: true
   contact_min_feet: 1
+  quiet_omega_rad_s: 1.5
   nan_timeout_s: 0.20
 
   # 翻倒类型分类（仅用于记录/策略，不参与是否摔倒的判定）
@@ -42,26 +43,32 @@ detector:
   fall_type_roll_deg: 60.0
 
 fsm:
-  # S1 安全阻尼：最短 0.5 s，最多等 3 s（平台阻尼 3 s 后回 Idle）
+  # 判定前的本体状态：静态翻倒注入场景下机器人已处于失控/阻尼，
+  # S0 保持阻尼（不能 PD 硬撑站立姿态，否则会把机体推过头翻成仰面）
+  monitor_mode: damping
+
+  # S1 安全阻尼：最短 0.5 s，最多等 3 s；关节与机体都静止并持续 0.3 s 才算稳
+  # （侧翻 65°+腿伸展时，阻尼下重力会让机体自动翻回趴地，约 3 s——必须等它翻完）
   settle_min_s: 0.50
   settle_max_s: 3.00
-  settle_omega_rad_s: 0.50
+  settle_omega_rad_s: 0.15
+  settle_omega_body_rad_s: 0.15
+  quiet_sustain_s: 0.30
 
-  # S3 起身：单次 20 s 超时；5 s 无改善可早停
+  # S3 起身：官方轨迹 4 s（2 s+2 s）；单次 20 s 超时兜底
+  standup_traj_s: 4.0
   standup_timeout_s: 20.0
-  standup_progress_window_s: 5.0
-  standup_progress_min_deg: 5.0
 
   # 重试策略：最多 2 次，间隔 2 s，失败后人工复位
   max_attempts: 2
   backoff_s: 2.0
 
-  # S4 起身后验证
+  # S4 起身后验证：连续直立 1 s；5 s 内未达成算失败
   verify_s: 1.0
+  verify_timeout_s: 5.0
   upright_roll_deg: 10.0
   upright_pitch_deg: 10.0
   upright_height_m: 0.25
-  upright_height_tol_m: 0.03
 
   # 防反复触发
   max_recoveries_per_min: 3
@@ -74,6 +81,7 @@ fsm:
 
 sim:
   timestep_s: 0.001
+  damping_kd: 2.5
   # 官方 lite3_control_parameters.cpp + standup_state.hpp 参数
   stand:
     pre_height_m: 0.12

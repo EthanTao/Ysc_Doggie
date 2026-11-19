@@ -9,14 +9,9 @@ venv/
 build/
 dist/
 
-# Data & media (保留占位与汇总)
-data/raw/*
-data/processed/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!data/processed/summary.md
-videos/*
-!videos/.gitkeep
+# 原始数据与视频是交付物，纳入版本管理；只忽略临时产物
+data/raw/dev*
+data/raw/trial_*
 
 # MuJoCo 运行产物
 *.mjb

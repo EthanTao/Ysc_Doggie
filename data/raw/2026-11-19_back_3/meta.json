@@ -1,0 +1,130 @@
+{
+  "run_id": "2026-11-19_back_3",
+  "date": "2026-11-19T13:14:42",
+  "fall": "back",
+  "scene": "flat",
+  "model": "DeepRobotics Lite3 official MJCF (BSD-3), see sim/models/lite3/SOURCE.md",
+  "config": {
+    "detector": {
+      "rate_hz": 200,
+      "lowpass_cutoff_hz": 10.0,
+      "roll_threshold_deg": 50.0,
+      "pitch_threshold_deg": 50.0,
+      "fast_path_deg": 75.0,
+      "fast_path_dwell_s": 0.15,
+      "dwell_s": 0.3,
+      "recover_roll_deg": 35.0,
+      "recover_pitch_deg": 35.0,
+      "recover_dwell_s": 0.5,
+      "height_min_m": 0.1,
+      "height_dwell_s": 0.3,
+      "use_height": true,
+      "use_contact": true,
+      "contact_min_feet": 1,
+      "quiet_omega_rad_s": 1.5,
+      "nan_timeout_s": 0.2,
+      "fall_type_pitch_deg": 60.0,
+      "fall_type_roll_deg": 60.0
+    },
+    "fsm": {
+      "monitor_mode": "damping",
+      "settle_min_s": 0.5,
+      "settle_max_s": 3.0,
+      "settle_omega_rad_s": 0.15,
+      "settle_omega_body_rad_s": 0.15,
+      "quiet_sustain_s": 0.3,
+      "standup_traj_s": 4.0,
+      "standup_timeout_s": 20.0,
+      "max_attempts": 2,
+      "backoff_s": 2.0,
+      "verify_s": 1.0,
+      "verify_timeout_s": 5.0,
+      "upright_roll_deg": 10.0,
+      "upright_pitch_deg": 10.0,
+      "upright_height_m": 0.25,
+      "max_recoveries_per_min": 3,
+      "require_manual_reset": true,
+      "resume": {
+        "enabled": false,
+        "ramp_s": 1.0
+      }
+    },
+    "sim": {
+      "timestep_s": 0.001,
+      "damping_kd": 2.5,
+      "stand": {
+        "pre_height_m": 0.12,
+        "stand_height_m": 0.33,
+        "duration_per_phase_s": 2.0,
+        "kp": 100.0,
+        "kd": 2.5,
+        "pre_pose_rad": [
+          0.0,
+          -1.35453,
+          2.54948
+        ]
+      },
+      "trot": {
+        "policy_decimation": 12,
+        "vx_max_m_s": 0.8,
+        "wz_max_rad_s": 0.8
+      }
+    }
+  },
+  "result": {
+    "final_state": "S5_SAFE_FAULT",
+    "attempts": 2,
+    "fault_code": "E_STANDUP_NOT_UPRIGHT",
+    "detected": true,
+    "fall_kind": "back",
+    "fall_cue": "fast_path",
+    "order_safe_before_standup": true,
+    "latency_s": 0.155,
+    "transitions": [
+      {
+        "t": 0.155,
+        "from": "S0_MONITOR",
+        "to": "S1_SAFE_DAMPING",
+        "reason": "fall_confirmed:fast_path"
+      },
+      {
+        "t": 1.865,
+        "from": "S1_SAFE_DAMPING",
+        "to": "S2_ASSESS",
+        "reason": "settled"
+      },
+      {
+        "t": 1.87,
+        "from": "S2_ASSESS",
+        "to": "S3_STANDUP",
+        "reason": "attempt_1"
+      },
+      {
+        "t": 6.07,
+        "from": "S3_STANDUP",
+        "to": "S1_SAFE_DAMPING",
+        "reason": "retry_after_E_STANDUP_NOT_UPRIGHT"
+      },
+      {
+        "t": 7.17,
+        "from": "S1_SAFE_DAMPING",
+        "to": "S2_ASSESS",
+        "reason": "settled"
+      },
+      {
+        "t": 9.175,
+        "from": "S2_ASSESS",
+        "to": "S3_STANDUP",
+        "reason": "attempt_2"
+      },
+      {
+        "t": 13.38,
+        "from": "S3_STANDUP",
+        "to": "S5_SAFE_FAULT",
+        "reason": "E_STANDUP_NOT_UPRIGHT"
+      }
+    ],
+    "timeout": false,
+    "recovered": false
+  }
+}
