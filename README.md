@@ -81,14 +81,11 @@ pip install -e ".[dev]"
 # 2. 冒烟测试：加载官方模型，站立 5 s（可选出图）
 MUJOCO_GL=egl python scripts/sim_smoke_test.py --render smoke.png
 
-# 3. 单次试验：侧翻 → 检测 → 阻尼 → 起身（待实现）
-python scripts/run_trial.py --fall side_left --scene flat
-
-# 4. 9 次正式矩阵 + 受阻测试（待实现）
-python scripts/run_matrix.py --suite formal
-
-# 5. 阈值标定（待实现）
-python scripts/calibrate.py --sweep
+# 3. 实时观看仿真（MuJoCo 窗口，0.5 倍速）
+python scripts/watch_sim.py --fall side_left --speed 0.5
+# 其他场景：front / back / side_right / prone（配 --scene blocked）
+python scripts/watch_sim.py --fall back --speed 0.5
+python scripts/watch_sim.py --fall prone --scene blocked --speed 0.5
 ```
 
 ## 安全声明
