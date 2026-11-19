@@ -1,0 +1,39 @@
+{
+  "run_id": "normal_vx0.6",
+  "cmd": {
+    "vx": 0.6,
+    "vy": 0.0,
+    "wz": 0.0
+  },
+  "duration_s": 60.0,
+  "false_positives": 0,
+  "first_trigger_s": null,
+  "max_abs_roll_deg": 0.93,
+  "max_abs_pitch_deg": 1.53,
+  "min_height_m": 0.3209,
+  "distance_x_m": 27.187,
+  "wall_time_s": 1.3,
+  "config": {
+    "detector": {
+      "rate_hz": 200,
+      "lowpass_cutoff_hz": 10.0,
+      "roll_threshold_deg": 50.0,
+      "pitch_threshold_deg": 50.0,
+      "fast_path_deg": 75.0,
+      "fast_path_dwell_s": 0.15,
+      "dwell_s": 0.3,
+      "recover_roll_deg": 35.0,
+      "recover_pitch_deg": 35.0,
+      "recover_dwell_s": 0.5,
+      "height_min_m": 0.1,
+      "height_dwell_s": 0.3,
+      "use_height": true,
+      "use_contact": true,
+      "contact_min_feet": 1,
+      "quiet_omega_rad_s": 1.5,
+      "nan_timeout_s": 0.2,
+      "fall_type_pitch_deg": 60.0,
+      "fall_type_roll_deg": 60.0
+    }
+  }
+}

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -90,6 +91,10 @@ def main() -> None:
         w.writeheader()
         w.writerows(rows)
 
+    normal = []
+    for mf in sorted((ROOT / "data" / "raw").glob("normal_*/meta.json")):
+        normal.append(json.loads(mf.read_text()))
+
     formal_rows = [r for r in rows if r["scene"] == "flat"]
     blocked_rows = [r for r in rows if r["scene"] == "blocked"]
     n_formal = len(formal_rows)
@@ -115,6 +120,18 @@ def main() -> None:
         f"- 重试上限（应全部 ≤2）："
         + ", ".join(str(r['attempts']) for r in blocked_rows),
         "",
+    ]
+    if normal:
+        lines += [
+            "## 正常小跑（误报测试）",
+            f"- {len(normal)} 段，合计 {sum(n['duration_s'] for n in normal):.0f} s",
+            f"- 误报：{sum(n['false_positives'] for n in normal)} 次",
+            f"- 正常姿态包络：|roll| ≤ {max(n['max_abs_roll_deg'] for n in normal):.2f}°"
+            f"，|pitch| ≤ {max(n['max_abs_pitch_deg'] for n in normal):.2f}°"
+            f"，高度 ≥ {min(n['min_height_m'] for n in normal):.3f} m",
+            "",
+        ]
+    lines += [
         "## 明细",
         "| run | fall | scene | detected | kind | latency_s | order_ok | attempts | recovered | standup_s | final | fault |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|",

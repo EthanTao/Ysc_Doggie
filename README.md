@@ -31,6 +31,7 @@
 | 起身成功 | **9/9**：前翻 3/3、侧翻 3/3、后翻 3/3（后翻采用前向回摆构造落到趴地） |
 | 起身耗时 | 5.21 s（优秀档 ≤15 s） |
 | 受阻处理 | 3/3 停 `S5_SAFE_FAULT` + 故障码，尝试 2 次后锁存 |
+| 正常小跑误报 | 3×60 s，**0 次**；包络 |roll| ≤1.09°、|pitch| ≤1.92° |
 
 复现：`python scripts/run_matrix.py --suite all`；明细见 `data/processed/summary.md`，视频在 `videos/`。
 

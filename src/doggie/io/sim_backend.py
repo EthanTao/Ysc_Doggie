@@ -86,6 +86,12 @@ class SimBackend:
         self._su_t0: float | None = None
         self._su_q0: np.ndarray | None = None
 
+        # RL 小跑（官方 ONNX 策略，用于误报/正常数据采集）
+        self.policy = None
+        self.rl_target = self.q_stand.copy()
+        self.cmd_vel = np.zeros(3)
+        self._rl_count = 0
+
     # ------------------------------------------------------------------ setup
     def reset(self) -> None:
         mujoco.mj_resetData(self.model, self.data)
@@ -142,9 +148,21 @@ class SimBackend:
     def set_mode(self, mode: Mode) -> None:
         self.mode = mode
 
+    def enable_policy(self, path: Path | None = None) -> None:
+        from .policy import PolicyController
+
+        self.policy = PolicyController(path or MODELS / "policy.onnx")
+
+    def set_velocity(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0) -> None:
+        self.cmd_vel[:] = [vx, vy, wz]
+
     def start_standup(self, t: float) -> None:
         self._su_t0 = t
         self._su_q0 = self.data.qpos[self._qadr].copy()
+
+    def start_rl(self) -> None:
+        self._rl_count = 0
+        self.mode = Mode.RL
 
     def _spline(self, x0: float, xf: float, t: float, T: float) -> float:
         """官方 GetCubicSplinePos（v0=vf=0）。"""
@@ -177,9 +195,24 @@ class SimBackend:
             self._pd(self._standup_target(self.data.time))
         elif self.mode == Mode.HOLD:
             self._pd(self.q_stand)
-        else:  # RL 等未接入的模式：阻尼兜底
+        elif self.mode == Mode.RL:
+            from .policy import DECIMATION, KD as RL_KD, KP as RL_KP
+
+            if self.policy is None:
+                self.enable_policy()
+            if self._rl_count % DECIMATION == 0:
+                self.rl_target = self.policy.act(
+                    self.data.qpos[3:7],
+                    self.data.qvel[3:6],
+                    self.data.qpos[self._qadr],
+                    self.data.qvel[self._vadr],
+                    self.cmd_vel,
+                )
+            self._rl_count += 1
+            q = self.data.qpos[self._qadr]
             dq = self.data.qvel[self._vadr]
-            self.data.ctrl[:] = np.clip(-self.damp_kd * dq, self._ctrl_lo, self._ctrl_hi)
+            tau = RL_KP * (self.rl_target - q) - RL_KD * dq
+            self.data.ctrl[:] = np.clip(tau, self._ctrl_lo, self._ctrl_hi)
 
     # ------------------------------------------------------------------ run
     def step(self) -> None:

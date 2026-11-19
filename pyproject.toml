@@ -22,6 +22,9 @@ dev = [
 video = [
     "imageio[ffmpeg]>=2.31",
 ]
+rl = [
+    "onnxruntime>=1.17",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

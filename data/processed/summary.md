@@ -10,6 +10,11 @@
 - 停在安全状态并给出提示：3/3
 - 重试上限（应全部 ≤2）：2, 2, 2
 
+## 正常小跑（误报测试）
+- 3 段，合计 180 s
+- 误报：0 次
+- 正常姿态包络：|roll| ≤ 1.09°，|pitch| ≤ 1.92°，高度 ≥ 0.319 m
+
 ## 明细
 | run | fall | scene | detected | kind | latency_s | order_ok | attempts | recovered | standup_s | final | fault |
 |---|---|---|---|---|---|---|---|---|---|---|---|
