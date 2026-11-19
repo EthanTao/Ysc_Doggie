@@ -63,7 +63,9 @@ def run_once(viewer, backend, detector, fsm, args) -> None:
         backend.place_fall(args.fall)
     detector.reset()
     fsm.reset()
-    backend.set_mode(fsm.mode)
+    # 注意：不要在这里用 fsm.mode（reset 后是 HOLD）覆盖 backend 的初始模式。
+    # 静止翻倒注入应保持 DAMPING，否则 5 ms 的站立 PD 会扰动翻倒过程。
+    backend.set_mode(fsm.monitor_mode)
 
     dt = backend.model.opt.timestep
     det_every = 5  # 200 Hz

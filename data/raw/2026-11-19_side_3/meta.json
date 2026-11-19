@@ -1,6 +1,6 @@
 {
   "run_id": "2026-11-19_side_3",
-  "date": "2026-11-19T13:14:41",
+  "date": "2026-11-19T13:37:20",
   "fall": "side_left",
   "scene": "flat",
   "model": "DeepRobotics Lite3 official MJCF (BSD-3), see sim/models/lite3/SOURCE.md",
@@ -89,25 +89,25 @@
         "reason": "fall_confirmed:attitude"
       },
       {
-        "t": 2.435,
+        "t": 2.21,
         "from": "S1_SAFE_DAMPING",
         "to": "S2_ASSESS",
         "reason": "settled"
       },
       {
-        "t": 2.44,
+        "t": 2.215,
         "from": "S2_ASSESS",
         "to": "S3_STANDUP",
         "reason": "attempt_1"
       },
       {
-        "t": 6.64,
+        "t": 6.415,
         "from": "S3_STANDUP",
         "to": "S4_VERIFY",
         "reason": "upright"
       },
       {
-        "t": 7.645,
+        "t": 7.42,
         "from": "S4_VERIFY",
         "to": "S0_MONITOR",
         "reason": "recovered"

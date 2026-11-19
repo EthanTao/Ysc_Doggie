@@ -42,6 +42,8 @@ class FallDetector:
         self._att_since: float | None = None
         self._h_since: float | None = None
         self._fast_since: float | None = None
+        self._peak_roll = 0.0
+        self._peak_pitch = 0.0
         self.latched = False
         self.event: FallEvent | None = None
         self.retriggers = 0
@@ -66,10 +68,11 @@ class FallDetector:
 
     # ------------------------------------------------------------------ logic
     def _classify(self, obs: Observation) -> str:
-        r, p = self._fr, self._fp
-        if abs(p) > self.type_pitch:
+        # 用整个过程的历史峰值分类：带前向动量的侧翻在触发时可能同时有 roll/pitch
+        r, p = self._peak_roll, self._peak_pitch
+        if abs(p) >= self.type_pitch:
             return "front" if p > 0 else "back"
-        if abs(r) > self.type_roll:
+        if abs(r) >= self.type_roll:
             return "side_left" if r > 0 else "side_right"
         if self.use_height and obs.base_height < self.height_min:
             return "flat"
@@ -94,6 +97,11 @@ class FallDetector:
             self._fp += self._alpha * (obs.pitch - self._fp)
         else:
             self._fr, self._fp, self._init = obs.roll, obs.pitch, True
+
+        if abs(self._fr) > abs(self._peak_roll):
+            self._peak_roll = self._fr
+        if abs(self._fp) > abs(self._peak_pitch):
+            self._peak_pitch = self._fp
 
         if self.latched:
             return True

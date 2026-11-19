@@ -26,11 +26,12 @@ Q_STRAIGHT = np.array([0.0, -1.35, 0.6] * 4)            # 腿伸展（侧翻时�
 FALL_INJECTS = {
     "front":      dict(axis=(0.0, 1.0, 0.0), deg=90.0,  joints=Q_PRE),
     "back":       dict(axis=(0.0, 1.0, 0.0), deg=-90.0, joints=Q_PRE),
-    # 侧翻 = 侧倾 65° + 前向翻转动量（行走中侧向失稳的典型构造）：
+    # 侧翻 = 侧倾 60° + 前向翻转动量（行走中侧向失稳的典型构造）：
     # 落地后机体翻正成趴地姿态，平台 StandUp 可恢复。
     # 静态侧翻（无动量）会停在约 57° 的侧撑姿态，平台无法起身 —— 见 docs/08。
-    "side_left":  dict(axis=(1.0, 0.0, 0.0), deg=65.0,  joints=Q_STRAIGHT, pitch_rate=-1.5),
-    "side_right": dict(axis=(1.0, 0.0, 0.0), deg=-65.0, joints=Q_STRAIGHT, pitch_rate=-1.5),
+    # 动量取 3.0 rad/s、侧倾 60°：对 ±2° 姿态误差和 5 ms 控制扰动均稳定。
+    "side_left":  dict(axis=(1.0, 0.0, 0.0), deg=60.0,  joints=Q_STRAIGHT, pitch_rate=-3.0),
+    "side_right": dict(axis=(1.0, 0.0, 0.0), deg=-60.0, joints=Q_STRAIGHT, pitch_rate=-3.0),
     # 趴地姿态（受阻场景用：跌入矮障碍物下方，靠高度判据检出）
     "prone":      dict(axis=(1.0, 0.0, 0.0), deg=0.0,   joints=Q_PRE),
 }
