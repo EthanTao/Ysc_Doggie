@@ -110,7 +110,7 @@
 | 仿真验证 | `sim/` + `scripts/run_matrix.py` | ✅ 已完成 |
 | 演示视频（未剪辑，含一次异常） | `videos/` | ✅ 已完成 |
 | 实测数据（9 + 3 次） | `data/raw/`、`data/processed/summary.md` | ✅ 已完成 |
-| 技术报告与答辩材料 | `docs/06-report.md`、`docs/07-slides.md` | ⬜ |
+| 技术报告与答辩材料 | `docs/06-report.md`、`docs/07-slides.md` | ✅ 已完成 |
 
 ## 5. 验收自查表（演示前逐项打勾）
 

@@ -19,7 +19,7 @@
 - [x] 官方 ONNX 策略小跑误报测试（3×60 s，0 误报）
 - [x] 阈值 / 回差 / 驻留时间标定
 - [ ] ROS2 接口与实机保护测试
-- [ ] 技术报告与答辩材料
+- [x] 技术报告与答辩材料（`docs/06-report.md`、`docs/07-slides.md`）
 
 当前 MuJoCo 演示按官方 `StandUpState` 默认时长设置每阶段 1.5 s。仿真实现复刻轨迹结构，不是直接调用官方控制器。
 
@@ -64,6 +64,8 @@
 
 - [任务理解与评分映射](docs/00-requirements-traceability.md)
 - [总体计划（技术路线、状态机、测试、进度）](docs/01-plan.md)
+- [技术报告（完整正文、公式、图表与标定）](docs/06-report.md)
+- [答辩 PPT 逐页稿与 AI 生成提示词](docs/07-slides.md)
 - [仿真可行性预研（含起身边界实测）](docs/08-feasibility.md)
 - [汇报数据包（指标表 + 7 张图）](docs/report/data-pack.md)
 
