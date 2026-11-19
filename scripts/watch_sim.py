@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from doggie.core.detector import FallDetector  # noqa: E402
 from doggie.core.recovery_fsm import RecoveryFSM  # noqa: E402
 from doggie.core.types import FsmState as S  # noqa: E402
+from doggie.core.types import Mode  # noqa: E402
 from doggie.io.sim_backend import SimBackend  # noqa: E402
 from doggie.utils.logger import load_config  # noqa: E402
 
@@ -37,9 +38,10 @@ def set_overlay(viewer, fsm, obs, detector) -> None:
     font = mujoco.mjtFontScale.mjFONTSCALE_150
     grid = mujoco.mjtGridPos
     fault = fsm.fault_code or ""
+    strat = f" | {fsm.strategy}" if getattr(fsm, "strategy", "") else ""
     texts = [
         (font, grid.mjGRID_TOPLEFT, "Doggie | Lite3 fall recovery", ""),
-        (font, grid.mjGRID_TOPRIGHT, fsm.state.value, f"mode: {fsm.mode.value}"),
+        (font, grid.mjGRID_TOPRIGHT, fsm.state.value, f"mode: {fsm.mode.value}{strat}"),
         (
             font,
             grid.mjGRID_BOTTOMLEFT,
@@ -63,6 +65,8 @@ def run_once(viewer, backend, detector, fsm, args) -> None:
         backend.place_fall(args.fall)
     detector.reset()
     fsm.reset()
+    # 观看正常站立时保持 HOLD；翻倒场景才用阻尼，避免机体自己塌下去。
+    fsm.monitor_mode = Mode.HOLD if args.fall in ("none", "stand") else Mode.DAMPING
     # 注意：不要在这里用 fsm.mode（reset 后是 HOLD）覆盖 backend 的初始模式。
     # 静止翻倒注入应保持 DAMPING，否则 5 ms 的站立 PD 会扰动翻倒过程。
     backend.set_mode(fsm.monitor_mode)
@@ -113,9 +117,15 @@ def run_once(viewer, backend, detector, fsm, args) -> None:
     summary = fsm.summary()
     print("\n===== 结果 =====")
     print(f"判定: {summary['detected']}  (时延 {summary.get('latency_s', '-')} s)")
-    print(f"顺序: {'先安全后起身' if summary['order_safe_before_standup'] else '顺序错误'}")
+    if summary["detected"]:
+        order = "先安全后起身" if summary["order_safe_before_standup"] else "顺序错误"
+    else:
+        order = "—（未检测到摔倒）"
+    print(f"顺序: {order}")
     print(f"尝试次数: {summary['attempts']}  最终状态: {summary['final_state']}")
-    print(f"起身成功: {'t_recovered' in fsm.m}  起身耗时: {summary.get('standup_duration_s', '-')} s")
+    if summary["detected"]:
+        recovered = "t_recovered" in fsm.m
+        print(f"起身成功: {recovered}  起身耗时: {summary.get('standup_duration_s', '-')} s")
     if summary.get("fault_code"):
         print(f"故障码: {summary['fault_code']}")
     sys.stdout.flush()
@@ -143,10 +153,11 @@ def main() -> None:
             raise SystemExit(f"unknown fall in playlist: {f}")
 
     with mujoco.viewer.launch_passive(backend.model, backend.data) as viewer:
-        viewer.cam.distance = 1.7
-        viewer.cam.azimuth = 135
+        viewer.opt.geomgroup[3] = 0  # 隐藏碰撞体，只留外观
+        viewer.cam.distance = 1.55
+        viewer.cam.azimuth = 45
         viewer.cam.elevation = -18
-        viewer.cam.lookat[:] = [0.12, 0.0, 0.22]
+        viewer.cam.lookat[:] = [0.03, 0.0, 0.25]
         print(f"窗口已打开：{args.fall} @ {args.scene}，speed={args.speed}，loop={args.loop}")
         print("鼠标旋转/滚轮缩放；关闭窗口退出。")
         sys.stdout.flush()

@@ -36,21 +36,23 @@
 |---|---|---|
 | **MuJoCo（选用）** | ✅ | 轻量（数百 MB）、CPU 可跑、接触物理稳定、易做姿态注入与批量测试；官方 Lite3 仓库本身支持 MuJoCo |
 | PyBullet | 备选 | 官方也支持，但接触与渲染质量不如 MuJoCo |
-| Gazebo | 不选 | 需要完整 ROS2/URDF 链路，搭建成本高，对「摔倒」这种强接触场景调参麻烦 |
+| Gazebo | 不选 | 需要完整 ROS2/MJCF 链路，搭建成本高，对「摔倒」这种强接触场景调参麻烦 |
 | Isaac Sim / Lab | 不选 | 体积大、驱动要求高，本机 12 GB 显存和磁盘都紧张，且任务不需要 RL 训练 |
 
 本机配置（Ultra 9 275HX / 30 GB / RTX 5070 Ti 12 GB / 约 72 GB 可用）跑 MuJoCo 绰绰有余，**不需要租云服务器**。
 
 ### 2.2 模型与资产来源
 
-- **MJCF 模型**：DeepRobotics 官方 Lite3 模型（BSD-3-Clause，`models/lite3/LICENSE.txt`），含 12 个力矩电机、IMU site、碰撞体。
+- **机器人模型**：DeepRobotics 官方 Lite3 MJCF（BSD-3-Clause，`sim/models/lite3/LICENSE.txt`），含 12 个关节、IMU/相机安装坐标系与碰撞体；MuJoCo 场景由 `scripts/build_scene.py` 生成。
 - **行走策略**：官方 `Lite3_rl_deploy` 的 `policy.onnx`（45 维观测 / 12 维动作，推理频率为物理步的 1/12），用于「行进中失稳」场景和误报测试。
-- **站立轨迹**：按官方 `StandUpState` 的两阶段三次样条 + 逆运动学复刻，参数取自官方 `lite3_control_parameters.cpp`：
+- **站立轨迹**：按官方 `StandUpState` 的两阶段三次样条 + 逆运动学复刻；高度、腿长和增益取自 `lite3_control_parameters.cpp`，每阶段时长默认值取自 `control_parameters.h`：
   - 预站立高度 `pre_height = 0.12 m`，最终站立高度 `stand_height = 0.33 m`；
-  - 每段 `stand_duration = 2 s`，总时长 4 s；
+  - 每段 `stand_duration = 1.5 s`，总时长 3 s（官方 `control_parameters.h` 默认值）；
   - 腿长 `thigh = 0.20 m`、`shank = 0.21 m`；
   - 站立关节角由 IK 计算，预站立姿态为 `[0, -1.35453, 2.54948] × 4`；
   - 关节增益 `kp = 100`、`kd = 2.5`（官方 swing leg 参数）。
+
+Doggie 的 MuJoCo 后端按官方 `StandUpState` 的两阶段结构、IK 与默认时长复刻动作，不会直接调用官方控制器。首次矩阵使用每阶段 2 s，之后改为源码默认的 1.5 s；仿真表现不能直接外推为实机结果。
 - **状态机语义**：对齐官方 `StateMachine`：`Idle → StandUp → RLControl`，`JointDamping` 持续 3 s 后回 `Idle`，`LoseControlJudge()` 可强制切阻尼。
 
 #### 官方代码的开放边界（答辩要讲清楚）
@@ -59,7 +61,7 @@
 |---|---|---|
 | `Lite3_rl_deploy/state_machine/*.hpp` | 开源（GitHub） | 只读参考：状态语义、站立轨迹、阻尼行为 |
 | `interface/robot/simulation/mujoco_simulation.py` | 开源 | 参考 UDP 关节命令格式与仿真接口 |
-| `Lite3_description/`（MJCF + meshes） | 开源（BSD-3） | 复用模型 |
+| `deep_robotics_model/Lite3/mjcf`（MJCF + meshes） | 开源（BSD-3） | 复用模型 |
 | `policy/ppo/policy.onnx` | 开源 | 复用于小跑/失稳场景 |
 | 机器人固件、量产 RL SDK、Jetson 部署包 | 闭源 | **不逆向**；只通过公开接口调用 |
 
@@ -107,7 +109,7 @@
 │         ┌────────▼────────┐     ┌────────▼──────────────┐  │
 │         │   SimBackend    │     │    Ros2Backend        │  │
 │         │ MuJoCo + PD     │     │ /IMU_DATA /JOINTS_DATA│  │
-│         │ 官方 MJCF/策略   │     │ /JOINTS_CMD 状态话题   │  │
+│         │ 官方 MJCF/策略  │     │ /JOINTS_CMD 状态话题   │  │
 │         └─────────────────┘     └───────────────────────┘  │
 │                                                            │
 │  ┌────────────────────┐  ┌──────────────────────────────┐  │
@@ -230,7 +232,7 @@ attitude_bad = |roll| > θ_roll  or  |pitch| > θ_pitch
 | `max_recoveries_per_min` | 3 | 超过则直接故障，防止反复触发 |
 
 **设计理由**：
-- 20 s 大于平台站立动作 4 s 的 5 倍，足以覆盖被卡住后的挣扎；
+- 20 s 约为官方默认站立轨迹 3 s 的 6.7 倍，足以覆盖被卡住后的挣扎；
 - 2 次尝试能在「第一次被障碍挡住、第二次换个姿态成功」与「无限重试」之间取平衡；
 - 失败后必须人工复位，符合任务书「停在安全状态并给出提示」的要求，也避免现场反复摔打机器人。
 
@@ -268,7 +270,7 @@ stateDiagram-v2
 
 ```
 sim/
-├── models/lite3/          # 官方 MJCF + meshes + LICENSE（BSD-3）
+├── models/lite3/          # 官方 MJCF + meshes + LICENSE（BSD-3）+ 生成场景
 ├── scenes/
 │   ├── flat.xml           # 平地
 │   ├── step.xml           # 侧向 0.10 m 台阶（起身受阻）
@@ -287,12 +289,12 @@ sim/
 | 行进中失稳 | 官方 ONNX 策略小跑，施加 60 N 侧向冲量 0.25 s | 验证运动不干扰判定 |
 | 起身受阻 | 侧向台阶 / 斜坡 / 单足压住 | 验证超时与故障锁存 |
 
-> **可行性预研结论（2026-11-19，MuJoCo 4.0 + 精简官方模型，已实测）**：
+> **可行性预研结论（2026-11-19，MuJoCo 4.0 + 官方 MJCF，已实测）**：
 > - 平台 `StandUpState` 的站立轨迹本质是「从趴/坐姿插值到蹲姿，再升到 0.33 m」，**不是通用自翻正算法**；
 > - 实测：前翻 90°（趴地）可起身；侧翻 60° + 3.0 rad/s 前向动量（翻正成趴地）可起身；后翻 -90° + 4.0 rad/s 前向回摆（越过仰面落到趴地）可起身；真正的四脚朝天、静态侧撑无法起身（提高力矩极限也不行，是几何问题）；
 > - 首轮完整矩阵：检出 9/9（时延 0.15–0.32 s）、先安全后起身 9/9、起身 9/9（平均 5.2 s）、受阻 3/3 停安全状态（详见 `docs/08-feasibility.md`）；
 > - 因此正式 9 次按「前翻 3 + 侧翻 3 + 后翻 3」构造并全部成功；失败/超时用例单独用「趴地被矮障碍压住」的受阻场景（3/3 停安全状态），并额外展示真正四脚朝天的能力边界。
-> - 姿态构造必须保证关节角在 MJCF 范围内，且不产生初始穿透；每种姿态先做 1 次「无检测、纯物理」稳定性检查，确认 3 s 内不会自行翻滚，再纳入正式矩阵。
+> - 姿态构造必须保证关节角在模型范围内，且不产生初始穿透；每种姿态先做 1 次「无检测、纯物理」稳定性检查，确认 3 s 内不会自行翻滚，再纳入正式矩阵。
 
 > 官方 `RLControlStateONNX::PostureUnsafeCheck()` 已经内置了一个粗略保护：`|roll| > 30°` 或 `|pitch| > 45°` 即判失控并切阻尼。我们的检测器要在这个保护之上给出更完整的判定依据、时延与可标定参数；报告中会把两者做对比。
 
@@ -436,7 +438,7 @@ Doggie/
 │       ├── logger.py                     # CSV/JSONL
 │       └── metrics.py                    # 时延/成功率统计
 ├── sim/
-│   ├── models/lite3/                     # 官方 MJCF + meshes + LICENSE
+│   ├── models/lite3/                     # 官方 MJCF + meshes + LICENSE + 生成场景
 │   ├── scenes/{flat,step,slope}.xml
 │   ├── inject.py
 │   └── standup.py
@@ -466,7 +468,7 @@ Doggie/
 
 | 天 | 任务 | 产出 |
 |---|---|---|
-| D1–D2 | 安装 MuJoCo，加载官方 MJCF，站立/小跑跑通；确认渲染与日志 | `sim/` 可运行，站立高度/姿态记录 |
+| D1–D2 | 安装 MuJoCo，加载官方 MJCF 生成的场景，站立/小跑跑通；确认渲染与日志 | `sim/` 可运行，站立高度/姿态记录 |
 | D3–D4 | 检测器 v0（滤波、阈值、驻留、回差）+ 单元测试 | `detector.py`、`test_detector.py` |
 | D5–D6 | FSM v0 + SimBackend，单次侧翻端到端 | 一段 20 s 视频 + 时间戳日志 |
 | D7 | 一页方案评审，确定阈值初值与测试口径 | 评审记录、基线数据 |
@@ -539,10 +541,10 @@ Doggie/
 
 ## 13. 本周行动清单（Next Actions）
 
-1. **环境**：创建 venv，安装 `mujoco`，加载官方 `Lite3.xml`，跑通站立 10 s（记录高度、姿态漂移）。
-2. **模型**：把官方 MJCF/meshes/LICENSE 放入 `sim/models/lite3/`，写 `sim/README` 注明来源与 BSD-3。
+1. **环境**：创建 venv，安装 `mujoco`，加载官方 Lite3 MJCF 生成的场景，跑通站立 10 s（记录高度、姿态漂移）。
+2. **模型**：把官方 MJCF/meshes/LICENSE 放入 `sim/models/lite3/mjcf/`，用 `scripts/build_scene.py` 生成 MuJoCo 场景，并在 `SOURCE.md` 注明来源与 BSD-3。
 3. **检测器**：实现 `FallDetector` 骨架 + 合成数据单测（直立/小跑/前翻/后翻/侧翻）。
-4. **仿真器**：实现 `SimBackend` 的 `read()`/`set_mode()`，完成姿态注入与 4 s 站立轨迹。
+4. **仿真器**：实现 `SimBackend` 的 `read()`/`set_mode()`，完成姿态注入与 3 s 站立轨迹。
 5. **最小闭环**：`scripts/run_trial.py --fall side_left` 跑通「检测 → 阻尼 → 起身」，录一段视频。
 6. **评审材料**：把 `docs/01-plan.md` 压成一页 A4（问题、方案、指标、分工、风险），用于第 1 周方案评审。
 

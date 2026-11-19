@@ -7,6 +7,7 @@ import mujoco
 import numpy as np
 
 from ..core.types import Mode, Observation
+from .base import RobotBackend
 
 ROOT = Path(__file__).resolve().parents[3]
 MODELS = ROOT / "sim" / "models" / "lite3"
@@ -20,20 +21,16 @@ SHANK = 0.21
 PRE_HEIGHT = 0.12
 STAND_HEIGHT = 0.33
 
-# 翻倒姿态注入（预研筛选出的「平台可恢复」构造，见 docs/08-feasibility.md）
+# 翻倒姿态注入：全部统一采用官方预站立蜷腿角 Q_PRE（见 docs/08-feasibility.md）
 Q_PRE = np.array([0.0, -1.35453, 2.54948] * 4)          # 官方预站立（蜷腿）
-Q_STRAIGHT = np.array([0.0, -1.35, 0.6] * 4)            # 腿伸展（侧翻时脚有支点）
 FALL_INJECTS = {
     "front":      dict(axis=(0.0, 1.0, 0.0), deg=90.0,  joints=Q_PRE),
     # 后翻 = 后仰 -90° + 前向回摆 4.0 rad/s：机体越过仰面后落到趴地姿态，
     # 平台 StandUp 可恢复。真正的四脚朝天（无回摆）起不来，作为边界分析单独展示。
     "back":       dict(axis=(0.0, 1.0, 0.0), deg=-90.0, joints=Q_PRE, pitch_rate=4.0),
-    # 侧翻 = 侧倾 60° + 前向翻转动量（行走中侧向失稳的典型构造）：
-    # 落地后机体翻正成趴地姿态，平台 StandUp 可恢复。
-    # 静态侧翻（无动量）会停在约 57° 的侧撑姿态，平台无法起身 —— 见 docs/08。
-    # 动量取 3.0 rad/s、侧倾 60°：对 ±2° 姿态误差和 5 ms 控制扰动均稳定。
-    "side_left":  dict(axis=(1.0, 0.0, 0.0), deg=60.0,  joints=Q_STRAIGHT, pitch_rate=-3.0),
-    "side_right": dict(axis=(1.0, 0.0, 0.0), deg=-60.0, joints=Q_STRAIGHT, pitch_rate=-3.0),
+    # 侧翻 = 侧倾 ±65° + 官方 Q_PRE 蜷腿角：落地后自然翻回趴地，四腿对称贴地起身。
+    "side_left":  dict(axis=(1.0, 0.0, 0.0), deg=65.0,  joints=Q_PRE),
+    "side_right": dict(axis=(1.0, 0.0, 0.0), deg=-65.0, joints=Q_PRE),
     # 趴地姿态（受阻场景用：跌入矮障碍物下方，靠高度判据检出）
     "prone":      dict(axis=(1.0, 0.0, 0.0), deg=0.0,   joints=Q_PRE),
 }
@@ -51,8 +48,8 @@ def q_stand() -> np.ndarray:
     return np.array([0.0, hipy_by_height(STAND_HEIGHT), knee_by_height(STAND_HEIGHT)] * 4)
 
 
-class SimBackend:
-    """MuJoCo 仿真后端：复现官方状态机的四种模式与站立轨迹。"""
+class SimBackend(RobotBackend):
+    """MuJoCo 仿真后端：复现官方状态语义与站立轨迹结构。"""
 
     def __init__(self, sim_cfg: dict, scene: str = "flat") -> None:
         xml = MODELS / ("Lite3.xml" if scene == "flat" else f"Lite3_{scene}.xml")
@@ -68,14 +65,18 @@ class SimBackend:
         self._ctrl_hi = self.model.actuator_ctrlrange[:, 1].copy()
 
         self._floor = self.model.geom("floor").id
-        self._feet = {self.model.geom(f"{leg}_FOOT_collision").id for leg in LEGS}
+        self._feet = {
+            self.model.geom(f"{leg}_FOOT_collision").id for leg in LEGS
+        } | {
+            self.model.geom(f"{leg}_SHANK_collision").id for leg in LEGS
+        }
         self._torso_body = self.model.body("TORSO").id
 
         st = sim_cfg.get("stand", {})
         self.kp = float(st.get("kp", 100.0))
         self.kd = float(st.get("kd", 2.5))
         self.damp_kd = float(sim_cfg.get("damping_kd", 2.5))
-        self.T = float(st.get("duration_per_phase_s", 2.0))
+        self.T = float(st.get("duration_per_phase_s", 1.5))
         self.q_stand = q_stand()
         pre = np.asarray(st.get("pre_pose_rad", [0.0, -1.35453, 2.54948]), dtype=float)
         if pre.size == 3:  # 配置里只写一条腿时自动复制到四条腿
@@ -85,6 +86,8 @@ class SimBackend:
         self.mode = Mode.HOLD
         self._su_t0: float | None = None
         self._su_q0: np.ndarray | None = None
+        self._ld_t0: float | None = None
+        self._ld_q0: np.ndarray | None = None
 
         # RL 小跑（官方 ONNX 策略，用于误报/正常数据采集）
         self.policy = None
@@ -97,6 +100,7 @@ class SimBackend:
         mujoco.mj_resetData(self.model, self.data)
         self.mode = Mode.HOLD
         self._su_t0 = None
+        self._ld_t0 = None
 
     def place_standing(self) -> None:
         self.reset()
@@ -160,12 +164,17 @@ class SimBackend:
         self._su_t0 = t
         self._su_q0 = self.data.qpos[self._qadr].copy()
 
+    def start_liedown(self, t: float) -> None:
+        """对齐官方 LieDownState::OnEnter()：记录进入时的关节角与时间戳。"""
+        self._ld_t0 = t
+        self._ld_q0 = self.data.qpos[self._qadr].copy()
+
     def start_rl(self) -> None:
         self._rl_count = 0
         self.mode = Mode.RL
 
     def _spline(self, x0: float, xf: float, t: float, T: float) -> float:
-        """官方 GetCubicSplinePos（v0=vf=0）。"""
+        """按官方三次样条的位置公式生成目标（仿真中令端点速度为零）。"""
         if t >= T:
             return xf
         a = (2.0 * x0 - 2.0 * xf) / T**3
@@ -181,6 +190,14 @@ class SimBackend:
         hh = self._spline(PRE_HEIGHT, STAND_HEIGHT, el - self.T, self.T)
         return np.array([0.0, hipy_by_height(hh), knee_by_height(hh)] * 4)
 
+    def _liedown_target(self, t: float) -> np.ndarray:
+        """对齐官方 liedown_state.hpp 第一阶段（0 <= el <= T）：三次样条收腿到 Q_PRE。"""
+        el = t - (self._ld_t0 or t)
+        q0 = self._ld_q0 if self._ld_q0 is not None else self.data.qpos[self._qadr]
+        return np.array(
+            [self._spline(q0[i], self.q_pre[i], el, self.T) for i in range(12)]
+        )
+
     def _pd(self, target: np.ndarray) -> None:
         q = self.data.qpos[self._qadr]
         dq = self.data.qvel[self._vadr]
@@ -191,6 +208,14 @@ class SimBackend:
         if self.mode == Mode.DAMPING:
             dq = self.data.qvel[self._vadr]
             self.data.ctrl[:] = np.clip(-self.damp_kd * dq, self._ctrl_lo, self._ctrl_hi)
+        elif self.mode == Mode.LIEDOWN:
+            # 官方 liedown_state.hpp：前 T 秒三次样条收腿到 Q_PRE，之后切纯阻尼 kd 贴地
+            el = self.data.time - (self._ld_t0 or self.data.time)
+            if el <= self.T:
+                self._pd(self._liedown_target(self.data.time))
+            else:
+                dq = self.data.qvel[self._vadr]
+                self.data.ctrl[:] = np.clip(-self.kd * dq, self._ctrl_lo, self._ctrl_hi)
         elif self.mode == Mode.STANDUP:
             self._pd(self._standup_target(self.data.time))
         elif self.mode == Mode.HOLD:
@@ -227,12 +252,15 @@ class SimBackend:
         pitch = math.asin(float(np.clip(2.0 * (w * y - z * x), -1.0, 1.0)))
         yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
-        feet = 0
+        feet_legs = set()
         for i in range(d.ncon):
             c = d.contact[i]
             pair = {c.geom1, c.geom2}
-            if self._floor in pair and pair & self._feet:
-                feet += 1
+            if self._floor in pair:
+                for g in pair & self._feet:
+                    gname = self.model.geom(g).name
+                    feet_legs.add(gname[:2])
+        feet = len(feet_legs)
 
         return Observation(
             t=d.time,

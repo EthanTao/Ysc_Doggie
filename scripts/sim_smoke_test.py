@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MuJoCo 冒烟测试：加载官方 Lite3 模型，PD 站立 5 s，打印姿态与高度。
+"""MuJoCo 冒烟测试：加载官方 Lite3 MJCF 生成的场景，PD 站立 5 s，打印姿态与高度。
 
 用法：
     python scripts/sim_smoke_test.py
@@ -78,13 +78,15 @@ def main() -> None:
     if args.render is not None:
         import imageio.v3 as iio
 
-        renderer = mujoco.Renderer(model, 480, 640)
+        renderer = mujoco.Renderer(model, 720, 1280)
+        option = mujoco.MjvOption()
+        option.geomgroup[3] = 0  # 隐藏碰撞体，只留外观
         camera = mujoco.MjvCamera()
-        camera.distance = 1.1
-        camera.azimuth = 135
-        camera.elevation = -15
-        camera.lookat[:] = [0.0, 0.0, 0.25]
-        renderer.update_scene(data, camera)
+        camera.distance = 1.55
+        camera.azimuth = 45
+        camera.elevation = -18
+        camera.lookat[:] = [0.03, 0.0, 0.25]
+        renderer.update_scene(data, camera, scene_option=option)
         iio.imwrite(args.render, renderer.render())
         print(f"saved: {args.render}")
 

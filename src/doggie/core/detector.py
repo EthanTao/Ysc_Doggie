@@ -28,6 +28,9 @@ class FallDetector:
         self.use_height = bool(cfg.get("use_height", True))
         self.height_min = float(cfg.get("height_min_m", 0.10))
         self.height_dwell = float(cfg.get("height_dwell_s", 0.30))
+        self.rec_roll = math.radians(float(cfg.get("recover_roll_deg", 35.0)))
+        self.rec_pitch = math.radians(float(cfg.get("recover_pitch_deg", 35.0)))
+        self.rec_dwell = float(cfg.get("recover_dwell_s", 0.50))
         self.type_pitch = math.radians(float(cfg.get("fall_type_pitch_deg", 60.0)))
         self.type_roll = math.radians(float(cfg.get("fall_type_roll_deg", 60.0)))
 
@@ -42,9 +45,11 @@ class FallDetector:
         self._att_since: float | None = None
         self._h_since: float | None = None
         self._fast_since: float | None = None
+        self._rec_since: float | None = None
         self._peak_roll = 0.0
         self._peak_pitch = 0.0
         self.latched = False
+        self.in_hysteresis_band = False
         self.event: FallEvent | None = None
         self.retriggers = 0
 
@@ -53,10 +58,12 @@ class FallDetector:
         if self.latched:
             self.retriggers += 1
         self.latched = False
+        self.in_hysteresis_band = False
         self.event = None
         self._att_since = None
         self._h_since = None
         self._fast_since = None
+        self._rec_since = None
 
     @property
     def filtered_roll_deg(self) -> float:
@@ -103,7 +110,18 @@ class FallDetector:
         if abs(self._fp) > abs(self._peak_pitch):
             self._peak_pitch = self._fp
 
+        # 回差跟踪：只有连续 recover_dwell_s 满足 |roll|<recover_roll 且 |pitch|<recover_pitch 才算退出迟滞带
+        in_rec = abs(self._fr) < self.rec_roll and abs(self._fp) < self.rec_pitch
+        if in_rec:
+            if self._rec_since is None:
+                self._rec_since = obs.t
+            if obs.t - self._rec_since >= self.rec_dwell:
+                self.in_hysteresis_band = False
+        else:
+            self._rec_since = None
+
         if self.latched:
+            self.in_hysteresis_band = True
             return True
 
         att_bad = abs(self._fr) > self.roll_thr or abs(self._fp) > self.pitch_thr

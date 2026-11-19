@@ -55,8 +55,16 @@ fsm:
   settle_omega_body_rad_s: 0.15
   quiet_sustain_s: 0.30
 
-  # S3 起身：官方轨迹 4 s（2 s+2 s）；单次 20 s 超时兜底
-  standup_traj_s: 4.0
+  # S2 姿态评估与分流（全部复用官方状态：JointDamping / LieDown / StandUp）
+  assess_prone_deg: 35.0          # |roll|<35° 且 |pitch|<35° 视为机身已趴平
+  assess_supine_roll_deg: 120.0   # |roll|>=120° 视为仰翻（四脚朝天，不可恢复 -> SAFE_FAULT）
+  assess_supine_pitch_deg: 80.0   # |pitch|>=80° 视为倒立/仰翻（不可恢复 -> SAFE_FAULT）
+  assess_joint_tol_rad: 0.35      # 趴平时四腿偏离 Q_PRE >=0.35 rad 则先调官方 LieDown 整姿
+  liedown_traj_s: 1.5             # 官方 LieDownState 收腿时长（与 stand_duration 一致）
+  liedown_settle_s: 0.3           # 收腿后阻尼贴地稳定时间
+
+  # S3 仿真轨迹：3 s（1.5 s+1.5 s），与官方参数默认时长一致
+  standup_traj_s: 3.0
   standup_timeout_s: 20.0
 
   # 重试策略：最多 2 次，间隔 2 s，失败后人工复位
@@ -86,7 +94,8 @@ sim:
   stand:
     pre_height_m: 0.12
     stand_height_m: 0.33
-    duration_per_phase_s: 2.0
+    # 官方 StandUpState 默认每阶段 1.5 s；仿真按相同时间参数复刻轨迹结构
+    duration_per_phase_s: 1.5
     kp: 100.0
     kd: 2.5
     pre_pose_rad: [0.0, -1.35453, 2.54948]   # 每腿 [HipX, HipY, Knee]

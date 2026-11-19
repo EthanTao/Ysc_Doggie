@@ -1,0 +1,72 @@
+{
+  "generated_at": "2026-11-20T00:04:41",
+  "matrix_csv": "data/processed/matrix_2026-11-19.csv",
+  "config_sha256_12": "f0a41cd425ac",
+  "git_commit": "8df231a",
+  "git_dirty": false,
+  "formal": {
+    "n": 9,
+    "detected": 9,
+    "latency_s": {
+      "min": 0.155,
+      "max": 0.305,
+      "mean": 0.255
+    },
+    "latency_by_fall": {
+      "back": [
+        0.305
+      ],
+      "front": [
+        0.155
+      ],
+      "side_left": [
+        0.305
+      ],
+      "side_right": [
+        0.305
+      ]
+    },
+    "fall_cue_counts": {
+      "fast_path": 3,
+      "attitude": 6,
+      "height": 3
+    },
+    "safe_before_standup": 9,
+    "recovered": 9,
+    "attempts": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "standup_reported_mean_s": 4.21,
+    "standup_trajectory_mean_s": 3.2,
+    "verify_mean_s": 1.005,
+    "standup_total_mean_s": 4.205
+  },
+  "blocked": {
+    "n": 3,
+    "safe_fault": 3,
+    "attempts": [
+      2,
+      2,
+      2
+    ],
+    "fault_codes": [
+      "E_STANDUP_NOT_UPRIGHT"
+    ]
+  },
+  "normal": {
+    "runs": 3,
+    "duration_s": 180.0,
+    "false_positives": 0,
+    "max_abs_roll_deg": 1.06,
+    "max_abs_pitch_deg": 1.71,
+    "min_height_m": 0.3193
+  }
+}

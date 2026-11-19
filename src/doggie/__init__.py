@@ -3,6 +3,7 @@
 from .core.detector import FallDetector
 from .core.recovery_fsm import RecoveryFSM
 from .core.types import FsmState, Mode, Observation
+from .io.base import RobotBackend
 from .io.sim_backend import SimBackend
 from .supervisor import Supervisor
 
@@ -12,6 +13,7 @@ __all__ = [
     "FsmState",
     "Mode",
     "Observation",
+    "RobotBackend",
     "SimBackend",
     "Supervisor",
 ]

@@ -8,9 +8,10 @@ import numpy as np
 
 
 class Mode(str, Enum):
-    """对齐官方状态机的四种控制模式。"""
+    """对齐官方状态机的五种控制模式（Idle / StandUp / LieDown / JointDamping / RLControl）。"""
 
     DAMPING = "damping"      # JointDamping：纯阻尼，安全状态
+    LIEDOWN = "liedown"      # LieDown：官方 liedown_state.hpp（三次样条收腿到 Q_PRE + 阻尼贴地）
     STANDUP = "standup"      # StandUp：官方两阶段站立轨迹
     HOLD = "hold"            # 站立保持（官方 StandUp 结束后保持目标关节角）
     RL = "rl"                # RLControl：策略控制（误报测试用）
@@ -20,6 +21,7 @@ class FsmState(str, Enum):
     S0_MONITOR = "S0_MONITOR"
     S1_SAFE_DAMPING = "S1_SAFE_DAMPING"
     S2_ASSESS = "S2_ASSESS"
+    S2B_PREPARE_LIEDOWN = "S2B_PREPARE_LIEDOWN"
     S3_STANDUP = "S3_STANDUP"
     S4_VERIFY = "S4_VERIFY"
     S5_SAFE_FAULT = "S5_SAFE_FAULT"

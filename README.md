@@ -11,29 +11,40 @@
 
 - [x] 任务书解读与评分映射
 - [x] 总体方案与四周计划
-- [x] 仿真可行性预研（MuJoCo 加载官方模型、站立、离屏渲染、翻倒姿态筛选）
+- [x] 仿真可行性预研（MuJoCo 加载官方 MJCF、站立、离屏渲染、翻倒姿态筛选）
 - [x] 仿真工程化（场景、姿态注入、官方站立轨迹）
 - [x] 摔倒检测器 v0（含单元测试）
 - [x] 恢复状态机 v0（含超时/重试/锁存）
 - [x] 正式 9 次矩阵 + 受阻 3 次（检出 9/9、顺序 9/9、起身 9/9、受阻 3/3）
-- [ ] 官方 ONNX 策略小跑误报测试
-- [ ] 阈值 / 回差 / 驻留时间标定
+- [x] 官方 ONNX 策略小跑误报测试（3×60 s，0 误报）
+- [x] 阈值 / 回差 / 驻留时间标定
 - [ ] ROS2 接口与实机保护测试
 - [ ] 技术报告与答辩材料
 
-## 首轮完整矩阵（2026-11-19）
+当前 MuJoCo 演示按官方 `StandUpState` 默认时长设置每阶段 1.5 s。仿真实现复刻轨迹结构，不是直接调用官方控制器。
+
+## 当前完整矩阵（2026-11-19，官方 MJCF 展示场景）
 
 | 指标 | 结果 |
 |---|---|
 | 摔倒判定 | 9/9，误报 0 |
-| 判定时延 | 0.155–0.320 s（优秀档 ≤2 s） |
+| 判定时延 | 0.155–0.305 s（优秀档 ≤2 s） |
 | 先安全后起身 | 9/9（每次 `t_damping < t_standup`） |
 | 起身成功 | **9/9**：前翻 3/3、侧翻 3/3、后翻 3/3（后翻采用前向回摆构造落到趴地） |
-| 起身耗时 | 5.21 s（优秀档 ≤15 s） |
+| 起身耗时 | 4.21 s（优秀档 ≤15 s） |
 | 受阻处理 | 3/3 停 `S5_SAFE_FAULT` + 故障码，尝试 2 次后锁存 |
-| 正常小跑误报 | 3×60 s，**0 次**；包络 |roll| ≤1.09°、|pitch| ≤1.92° |
+| 正常小跑误报 | 3×60 s，**0 次**；包络 |roll| ≤1.06°、|pitch| ≤1.71° |
 
-复现：`python scripts/run_matrix.py --suite all`；明细见 `data/processed/summary.md`，视频在 `videos/`。
+复现：`python scripts/build_scene.py`（首次或改场景后）→ `python scripts/run_matrix.py --suite all`；明细见 `data/processed/summary.md`，视频在 `videos/`。
+
+展示视频（官方 MJCF 场景，1280×720）：
+
+- `videos/demo_mjcf_front.mp4`（前翻 → 起身）
+- `videos/demo_mjcf_side.mp4`（侧翻 → 起身）
+- `videos/demo_mjcf_back.mp4`（后翻 → 起身）
+- `videos/demo_mjcf_blocked.mp4`（趴地受阻 → 安全故障）
+
+汇报数据：`python scripts/calibrate_thresholds.py` → `python scripts/make_report_pack.py`，输出 `docs/report/data-pack.md` 与 7 张图。
 
 ## 目标档位
 
@@ -54,6 +65,7 @@
 - [任务理解与评分映射](docs/00-requirements-traceability.md)
 - [总体计划（技术路线、状态机、测试、进度）](docs/01-plan.md)
 - [仿真可行性预研（含起身边界实测）](docs/08-feasibility.md)
+- [汇报数据包（指标表 + 7 张图）](docs/report/data-pack.md)
 
 ## 目录结构
 
@@ -79,10 +91,13 @@ Doggie/
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# 2. 冒烟测试：加载官方模型，站立 5 s（可选出图）
+# 2. 由官方 MJCF 生成展示场景（仓库已带生成结果；改场景后重跑）
+python scripts/build_scene.py
+
+# 3. 冒烟测试：加载官方 MJCF 生成的场景，站立 5 s（可选出图）
 MUJOCO_GL=egl python scripts/sim_smoke_test.py --render smoke.png
 
-# 3. 实时观看仿真（MuJoCo 窗口，0.5 倍速）
+# 4. 实时观看仿真（MuJoCo 窗口，0.5 倍速）
 python scripts/watch_sim.py --fall side_left --speed 0.5
 # 其他场景：front / back / side_right / prone（配 --scene blocked）
 python scripts/watch_sim.py --fall back --speed 0.5

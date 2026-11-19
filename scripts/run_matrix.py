@@ -45,12 +45,13 @@ BLOCKED = [
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--suite", default="all", choices=["formal", "blocked", "all"])
+    ap.add_argument("--date", default="2026-11-19", help="测试日期前缀（默认固定 2026-11-19）")
     ap.add_argument("--video-key", default="", help="为指定 run 录视频，逗号分隔 key")
     ap.add_argument("--max-time", type=float, default=60.0)
     args = ap.parse_args()
 
     cfg = load_config(ROOT / "config" / "recovery.yaml")
-    today = date.today().isoformat()
+    today = args.date
 
     specs = []
     if args.suite in ("formal", "all"):
@@ -74,6 +75,7 @@ def main() -> None:
             "fall_kind": res.get("fall_kind", ""),
             "latency_s": res.get("latency_s", ""),
             "order_ok": res["order_safe_before_standup"],
+            "strategy": res.get("recovery_strategy", ""),
             "attempts": res["attempts"],
             "recovered": res["recovered"],
             "standup_s": res.get("standup_duration_s", ""),
@@ -133,13 +135,13 @@ def main() -> None:
         ]
     lines += [
         "## 明细",
-        "| run | fall | scene | detected | kind | latency_s | order_ok | attempts | recovered | standup_s | final | fault |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| run | fall | scene | detected | kind | latency_s | order_ok | strategy | attempts | recovered | standup_s | final | fault |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         lines.append(
             f"| {r['run_id']} | {r['fall']} | {r['scene']} | {r['detected']} | "
-            f"{r['fall_kind']} | {r['latency_s']} | {r['order_ok']} | {r['attempts']} | "
+            f"{r['fall_kind']} | {r['latency_s']} | {r['order_ok']} | {r['strategy']} | {r['attempts']} | "
             f"{r['recovered']} | {r['standup_s']} | {r['final_state']} | {r['fault']} |"
         )
     (ROOT / "data" / "processed" / "summary.md").write_text("\n".join(lines) + "\n")

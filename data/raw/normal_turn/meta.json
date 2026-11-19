@@ -8,10 +8,10 @@
   "duration_s": 60.0,
   "false_positives": 0,
   "first_trigger_s": null,
-  "max_abs_roll_deg": 0.81,
-  "max_abs_pitch_deg": 1.92,
-  "min_height_m": 0.3189,
-  "distance_x_m": -0.044,
+  "max_abs_roll_deg": 0.62,
+  "max_abs_pitch_deg": 1.56,
+  "min_height_m": 0.3193,
+  "distance_x_m": 0.003,
   "wall_time_s": 1.2,
   "config": {
     "detector": {
