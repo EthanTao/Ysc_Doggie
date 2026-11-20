@@ -96,6 +96,16 @@ class RecoveryFSM:
         self.detector.clear()
         return True
 
+    def force_fault(self, t: float, code: str) -> bool:
+        """外部安全链（看门狗）强制进入 S5_SAFE_FAULT 并锁存。
+
+        与正常失败路径共用 `_fault()`：切 DAMPING、记录 t_fault，只能人工复位。
+        """
+        if self.state == S.S5_SAFE_FAULT:
+            return False
+        self._fault(t, code)
+        return True
+
     def _go(self, new: S, reason: str, t: float) -> None:
         self.transitions.append((round(t, 4), self.state.value, new.value, reason))
         self.state = new
@@ -158,6 +168,7 @@ class RecoveryFSM:
                 self.m["t_fall_confirm"] = ev.t if ev else t
                 self.m["fall_kind"] = ev.kind if ev else "?"
                 self.m["fall_cue"] = ev.cue if ev else "?"
+                self.m["detect_delay_s"] = round(ev.latency_s, 3) if ev else None
                 self._s1_t0 = t
                 self.m["t_damping"] = t
                 self._go(S.S1_SAFE_DAMPING, f"fall_confirmed:{self.m['fall_cue']}", t)
@@ -294,6 +305,8 @@ class RecoveryFSM:
         }
         if "t_fall_confirm" in self.m:
             out["latency_s"] = round(self.m["t_fall_confirm"], 3)
+        if "detect_delay_s" in self.m:
+            out["detect_delay_s"] = self.m["detect_delay_s"]
         if "t_recovered" in self.m and t_standup is not None:
             out["standup_duration_s"] = round(self.m["t_recovered"] - t_standup, 2)
         return out

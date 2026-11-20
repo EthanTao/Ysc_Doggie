@@ -108,7 +108,39 @@ safety:
   backend_heartbeat_timeout_s: 0.50
   damping_ack_timeout_s: 0.50
   estop_on_comm_loss: true
+  fault_hold_s: 2.0             # 故障后保持阻尼的观察窗口（实机常驻模式退出前）
   allow_real_fall_test: false   # 实机禁止自由摔倒；只允许受控倾斜
+
+# 实机 ROS2 后端（scripts/run_real.py）。话题/字段差异见 docs/09-real-machine.md
+ros2:
+  node_name: doggie_recovery
+  # 传感器（默认按官方 drdds 消息；若实际驱动用 sensor_msgs/Imu 请改 imu_type）
+  imu_topic: /IMU_DATA
+  imu_type: drdds/msg/ImuData
+  imu_rpy_in_degrees: true
+  joints_topic: /JOINTS_DATA
+  joints_type: drdds/msg/JointsData
+  # 消息里 12 个关节的排列顺序（按实际 /JOINTS_DATA 核对！）
+  joint_order: [FL_HipX_joint, FL_HipY_joint, FL_Knee_joint,
+                FR_HipX_joint, FR_HipY_joint, FR_Knee_joint,
+                HL_HipX_joint, HL_HipY_joint, HL_Knee_joint,
+                HR_HipX_joint, HR_HipY_joint, HR_Knee_joint]
+  # 控制：官方状态机切换话题。留空 = 只读干跑，不下发任何运动指令
+  state_cmd_topic: ""
+  state_cmd_type: std_msgs/msg/String
+  state_names:
+    damping: kJointDamping
+    liedown: kLieDown
+    standup: kStandUp
+    hold: kIdle
+    rl: kRLControl
+  state_feedback_topic: ""      # 官方状态回读；留空则阻尼确认不可观测（看门狗不误报）
+  estop_topic: ""               # 独立急停话题（std_msgs/Bool）
+  status_topic: /doggie/status
+  reset_service: /doggie/reset
+  cmd_resend_s: 0.20            # 模式指令重发周期
+  height_source: fk             # fk=关节正解估计；msg=消息自带高度字段
+  force_threshold_n: 15.0       # 足端法向力 > 15 N 计为触地
 
 logging:
   rate_hz: 100

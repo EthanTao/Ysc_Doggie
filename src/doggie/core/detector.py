@@ -46,6 +46,7 @@ class FallDetector:
         self._h_since: float | None = None
         self._fast_since: float | None = None
         self._rec_since: float | None = None
+        self._first_bad: float | None = None
         self._peak_roll = 0.0
         self._peak_pitch = 0.0
         self.latched = False
@@ -64,6 +65,7 @@ class FallDetector:
         self._h_since = None
         self._fast_since = None
         self._rec_since = None
+        self._first_bad = None
 
     @property
     def filtered_roll_deg(self) -> float:
@@ -87,6 +89,7 @@ class FallDetector:
 
     def _confirm(self, obs: Observation, cue: str) -> bool:
         self.latched = True
+        delay = obs.t - self._first_bad if self._first_bad is not None else 0.0
         self.event = FallEvent(
             t=obs.t,
             kind=self._classify(obs),
@@ -94,6 +97,7 @@ class FallDetector:
             roll_deg=math.degrees(self._fr),
             pitch_deg=math.degrees(self._fp),
             height=obs.base_height,
+            latency_s=round(delay, 3),
         )
         return True
 
@@ -127,6 +131,13 @@ class FallDetector:
         att_bad = abs(self._fr) > self.roll_thr or abs(self._fp) > self.pitch_thr
         tilt = max(abs(self._fr), abs(self._fp))
         h_bad = self.use_height and obs.base_height < self.height_min
+
+        # 记录「首个判据越限」的时刻，用于区分「确认时延」与「运行到此刻的时间」
+        if att_bad or h_bad or tilt > self.fast_thr:
+            if self._first_bad is None:
+                self._first_bad = obs.t
+        else:
+            self._first_bad = None
 
         # c) 快速通道
         if tilt > self.fast_thr:

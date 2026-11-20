@@ -544,6 +544,8 @@ $$z_{\text{base}} \leftarrow z_{\text{base}} + (0.005 - d_{\min})$$
 | 状态与故障广播 | `/doggie/status`（自定义 JSON/Msg 话题） | 实时发布 `fsm_state`、`fault_code`、`attempts`、`strategy`、`latency_ms` | $20\text{ Hz}$ + 状态跳变即发 |
 | 人工复位接口 `manual_reset()` | `/doggie/reset`（`std_srvs/srv/Trigger`） | 仅在 `S5_SAFE_FAULT` 下生效，清除故障锁存并回到 `S0_MONITOR` | 人工按需调用 |
 
+> 实现位置：`src/doggie/io/ros2_backend.py`（话题收发与模式切换）、`src/doggie/io/ros2_convert.py`（消息字段解析）、`src/doggie/core/kinematics.py`（关节正解高度估计）、`src/doggie/core/safety.py`（双重看门狗）。`Supervisor` 已解耦为时间戳驱动，实机与仿真共用同一套决策逻辑；上机步骤与验收口径见 `docs/09-real-machine.md`。
+
 ### 6.2 仿真与实机差异（Sim-to-Real Gap）及工程补偿对策
 
 在实机部署时，必须正视仿真与物理硬件之间的四项核心差异，并采取对应的工程补偿措施（见表 6-2）：

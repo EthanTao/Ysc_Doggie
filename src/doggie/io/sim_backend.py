@@ -6,14 +6,12 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from ..core.kinematics import JOINT_NAMES, LEGS
 from ..core.types import Mode, Observation
 from .base import RobotBackend
 
 ROOT = Path(__file__).resolve().parents[3]
 MODELS = ROOT / "sim" / "models" / "lite3"
-
-LEGS = ("FL", "FR", "HL", "HR")
-JOINT_NAMES = tuple(f"{leg}_{part}_joint" for leg in LEGS for part in ("HipX", "HipY", "Knee"))
 
 # 官方 lite3_control_parameters.cpp
 THIGH = 0.20
@@ -35,6 +33,12 @@ FALL_INJECTS = {
     "prone":      dict(axis=(1.0, 0.0, 0.0), deg=0.0,   joints=Q_PRE),
 }
 
+# blocked 场景在 flat 之上只多一个静态障碍架（body "shelf"）。
+# 被动窗口只能绑定一个 MjModel，因此运行时通过平移该 body 来切换场景：
+# 移到地面以下即同时隐藏外观、移除碰撞，无需重开窗口。
+SHELF_BODY = "shelf"
+SHELF_HIDDEN_DZ = -5.0
+
 
 def hipy_by_height(h: float) -> float:
     return -math.acos((THIGH**2 + h**2 - SHANK**2) / (2.0 * h * THIGH))
@@ -54,10 +58,23 @@ class SimBackend(RobotBackend):
     def __init__(self, sim_cfg: dict, scene: str = "flat") -> None:
         xml = MODELS / ("Lite3.xml" if scene == "flat" else f"Lite3_{scene}.xml")
         if not xml.is_file():
-            raise FileNotFoundError(f"scene not found: {xml}")
+            raise FileNotFoundError(
+                f"scene not found: {xml} (run: python scripts/build_scene.py)"
+            )
         self.model = mujoco.MjModel.from_xml_path(str(xml))
         self.model.opt.timestep = float(sim_cfg.get("timestep_s", 0.001))
         self.data = mujoco.MjData(self.model)
+
+        # 场景切换用的障碍架（flat 模型没有该 body，id 为 -1）
+        self.scene = scene
+        self._shelf_body = int(
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, SHELF_BODY)
+        )
+        self._shelf_z0 = (
+            float(self.model.body_pos[self._shelf_body][2])
+            if self._shelf_body >= 0
+            else 0.0
+        )
 
         self._qadr = np.array([self.model.joint(n).qposadr[0] for n in JOINT_NAMES])
         self._vadr = np.array([self.model.joint(n).dofadr[0] for n in JOINT_NAMES])
@@ -122,6 +139,25 @@ class SimBackend(RobotBackend):
                 bid = int(self.model.body_parentid[bid])
         return out
 
+    def set_scene(self, scene: str) -> None:
+        """在当前 model 上切换 flat / blocked。
+
+        仅支持 blocked 模型：blocked 场景等于 flat 加一个静态障碍架，
+        把障碍 body 平移到地面以下即等于 flat（外观与碰撞同时失效）。
+        """
+        if scene not in ("flat", "blocked"):
+            raise ValueError(f"unknown scene: {scene}")
+        if self._shelf_body < 0 and scene == "blocked":
+            raise RuntimeError(
+                "blocked scene is unavailable in this model: "
+                "rebuild with python scripts/build_scene.py"
+            )
+        if self._shelf_body >= 0:
+            dz = 0.0 if scene == "blocked" else SHELF_HIDDEN_DZ
+            self.model.body_pos[self._shelf_body][2] = self._shelf_z0 + dz
+            mujoco.mj_forward(self.model, self.data)
+        self.scene = scene
+
     def place_fall(self, kind: str, clearance: float = 0.005) -> None:
         """按翻倒类型放置：最低接触点上方 clearance，零速度。"""
         if kind not in FALL_INJECTS:
@@ -151,6 +187,19 @@ class SimBackend(RobotBackend):
     # ------------------------------------------------------------------ modes
     def set_mode(self, mode: Mode) -> None:
         self.mode = mode
+
+    # ------------------------------------------------------------ timing / safety
+    def tick(self) -> None:
+        self.step()
+
+    def now(self) -> float:
+        return float(self.data.time)
+
+    def fixed_timestep(self) -> float | None:
+        return float(self.model.opt.timestep)
+
+    def damping_ack(self) -> bool | None:
+        return True  # 仿真：模式切换即时生效
 
     def enable_policy(self, path: Path | None = None) -> None:
         from .policy import PolicyController

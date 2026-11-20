@@ -11,6 +11,9 @@ class RobotBackend(ABC):
     决策层（FallDetector + RecoveryFSM）只依赖本接口与 Observation：
       - 仿真由 SimBackend（MuJoCo）实现；
       - 实机/官方仿真联调由 Ros2Backend（或 SDK 桥接）实现。
+
+    时间语义：`now()` 与 `Observation.t` 必须同基准且单调；Supervisor 只通过
+    `now()` 计时，不直接访问 MuJoCo 的 data/model，因此可同时驱动仿真与实机。
     """
 
     @abstractmethod
@@ -32,3 +35,22 @@ class RobotBackend(ABC):
     @abstractmethod
     def reset(self) -> None:
         """重置后端内部状态。"""
+
+    # ------------------------------------------------------------ timing / safety
+    def tick(self) -> None:
+        """推进一个控制步：仿真积分一步；实机自旋等待新数据。默认无操作。"""
+
+    def now(self) -> float:
+        """决策层使用的单调时间（秒），与 Observation.t 同一基准。"""
+        return float(self.read().t)
+
+    def fixed_timestep(self) -> float | None:
+        """固定步长（仿真返回 timestep）；实机返回 None，表示按时间戳调度。"""
+        return None
+
+    def damping_ack(self) -> bool | None:
+        """阻尼指令确认状态：True=已确认，False=待确认，None=不可观测。"""
+        return None
+
+    def emergency_stop(self) -> None:
+        """独立安全链：通信丢失时硬切发力。默认无操作。"""

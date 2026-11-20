@@ -58,3 +58,4 @@ class FallEvent:
     roll_deg: float
     pitch_deg: float
     height: float
+    latency_s: float = 0.0   # 从首个判据越限到确认的耗时（实机验收看的指标）

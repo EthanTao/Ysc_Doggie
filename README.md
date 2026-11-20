@@ -18,7 +18,8 @@
 - [x] 正式 9 次矩阵 + 受阻 3 次（检出 9/9、顺序 9/9、起身 9/9、受阻 3/3）
 - [x] 官方 ONNX 策略小跑误报测试（3×60 s，0 误报）
 - [x] 阈值 / 回差 / 驻留时间标定
-- [ ] ROS2 接口与实机保护测试
+- [x] ROS2 实机后端与安全看门狗（`Ros2Backend`、`SafetyMonitor`、`run_real.py`；默认只读干跑）
+- [ ] 实机联调与受控倾斜验收（按 `docs/09-real-machine.md` 四阶段 SOP）
 - [x] 技术报告与答辩材料（`docs/06-report.md`、`docs/07-slides.md`）
 
 当前 MuJoCo 演示按官方 `StandUpState` 默认时长设置每阶段 1.5 s。仿真实现复刻轨迹结构，不是直接调用官方控制器。
@@ -67,6 +68,7 @@
 - [技术报告（完整正文、公式、图表与标定）](docs/06-report.md)
 - [答辩 PPT 逐页稿与 AI 生成提示词](docs/07-slides.md)
 - [仿真可行性预研（含起身边界实测）](docs/08-feasibility.md)
+- [实机验收指南（ROS2 话题、四阶段 SOP、指标口径与风险）](docs/09-real-machine.md)
 - [汇报数据包（指标表 + 7 张图）](docs/report/data-pack.md)
 
 ## 目录结构
@@ -100,10 +102,17 @@ python scripts/build_scene.py
 MUJOCO_GL=egl python scripts/sim_smoke_test.py --render smoke.png
 
 # 4. 实时观看仿真（MuJoCo 窗口，0.5 倍速）
-python scripts/watch_sim.py --fall side_left --speed 0.5
-# 其他场景：front / back / side_right / prone（配 --scene blocked）
-python scripts/watch_sim.py --fall back --speed 0.5
+python scripts/watch_sim.py --playlist all --speed 0.5 --loop      # 5 类场景连播，自动切 flat/blocked
+python scripts/watch_sim.py --fall side_left --speed 0.5           # 单场景
+python scripts/watch_sim.py --playlist side_left@flat,prone@blocked --speed 0.5
+# 单项可写 fall@scene；省略 @scene 时用 --scene（默认 flat）
 python scripts/watch_sim.py --fall prone --scene blocked --speed 0.5
+
+# 5. 实机（默认只读干跑，必须显式 --enable-actuation 才下发运动指令）
+source /opt/ros/jazzy/setup.bash                    # 按实际发行版
+python scripts/selftest_ros2.py --duration 15       # ROS2 回环自检（不需要机器人）
+python scripts/run_real.py --duration 60                  # 只读验证话题/姿态
+python scripts/run_real.py --duration 300 --enable-actuation
 ```
 
 ## 安全声明
