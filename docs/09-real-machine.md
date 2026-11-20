@@ -44,8 +44,10 @@
    `kLieDown` / `kStandUp`）的切换方式后填入话题名；若驱动要求的是 SDK 调用而非
    话题，把 `Ros2Backend._publish_state()` 换成对应调用即可（单点改动）。
 
-可选但强烈建议：配 `state_feedback_topic`（状态回读），否则
-`damping_ack_timeout_s` 看门狗无法生效（代码会显式跳过，不会误报）。
+可选但强烈建议：配 `state_feedback_topic`（状态回读）与 `state_feedback_type`，
+否则 `damping_ack_timeout_s` 看门狗无法生效（代码会显式跳过，不会误报）。回读消息
+默认按 `std_msgs/msg/String` 的 `data` 字段与 `state_names` 比较；若官方用自定义
+State 消息，请同时确认字段解析逻辑。
 
 ## 3. 高度估计：实机没有高度真值时怎么办
 
@@ -92,8 +94,8 @@ $$
   0.320 / 0.300（受阻）。
 
 采样率变化会同时影响低通滤波与驻留判据的采样点密度：若 `/IMU_DATA` 是 100 Hz，
-请把 `config/recovery.yaml` 的 `detector.rate_hz` 和 `run_real.py --det-hz` 都改成 100，
-否则等效截止频率和驻留点数都会偏。
+用 `run_real.py --det-hz 100` 覆盖即可；该参数会同步 `detector.rate_hz`（低通系数），
+不需要再手改配置。默认使用 `config/recovery.yaml` 的 `detector.rate_hz`。
 
 ## 6. 已知差距与验收风险（务必提前和老师说明）
 

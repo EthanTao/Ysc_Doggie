@@ -43,6 +43,7 @@ DEFAULTS: dict[str, Any] = {
         "rl": "kRLControl",
     },
     "state_feedback_topic": "",  # 留空 = 阻尼确认不可观测，看门狗不误报
+    "state_feedback_type": "std_msgs/msg/String",  # 官方状态回读消息类型
     "estop_topic": "",
     "status_topic": "/doggie/status",
     "reset_service": "/doggie/reset",
@@ -118,7 +119,7 @@ class Ros2Backend(RobotBackend):
             )
 
         if self.cfg["state_feedback_topic"]:
-            fb_type = _import_msg(self.cfg["state_cmd_type"])
+            fb_type = _import_msg(self.cfg["state_feedback_type"])
             self.node.create_subscription(
                 fb_type, self.cfg["state_feedback_topic"], self._on_state, 10
             )

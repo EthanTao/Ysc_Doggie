@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from doggie.core.detector import FallDetector  # noqa: E402
 from doggie.core.recovery_fsm import RecoveryFSM  # noqa: E402
+from doggie.config import resolve_config  # noqa: E402
 from doggie.core.safety import SafetyMonitor  # noqa: E402
 from doggie.core.types import Mode  # noqa: E402
 from doggie.io.ros2_backend import Ros2Backend  # noqa: E402
@@ -69,10 +70,20 @@ def main() -> None:
     ap.add_argument("--yes", "-y", action="store_true", help="跳过启用指令前的确认")
     ap.add_argument("--calibrate", type=float, default=0.0, help="静态零偏标定秒数")
     ap.add_argument("--log-dir", default="", help="日志目录；留空自动生成")
-    ap.add_argument("--det-hz", type=float, default=200.0)
+    ap.add_argument(
+        "--det-hz",
+        type=float,
+        default=None,
+        help="检测频率覆盖（默认用 config 的 detector.rate_hz；会同步低通滤波系数）",
+    )
     args = ap.parse_args()
 
     cfg = load_config(Path(args.config))
+    if args.det_hz is not None:
+        cfg["detector"]["rate_hz"] = args.det_hz
+        cfg = resolve_config(cfg)
+    det_hz = float(cfg["detector"]["rate_hz"])
+    log_hz = float(cfg["logging"]["rate_hz"])
     dry_run = not args.enable_actuation
     run_id = f"real_{datetime.now():%Y%m%d_%H%M%S}"
     run_dir = Path(args.log_dir) if args.log_dir else ROOT / "data" / "raw" / run_id
@@ -131,7 +142,12 @@ def main() -> None:
 
         print(f"开始运行 {args.duration:.0f} s（Ctrl+C 退出，退出前会切回阻尼）")
         try:
-            result = sup.run(args.duration, det_hz=args.det_hz, continuous=True)
+            result = sup.run(
+                args.duration,
+                det_hz=det_hz,
+                log_hz=log_hz,
+                continuous=True,
+            )
             stopped = True
         except KeyboardInterrupt:
             print("\n收到 Ctrl+C，提前结束；已记录的数据仍会落盘。")

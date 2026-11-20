@@ -143,6 +143,7 @@ ros2:
     hold: kIdle
     rl: kRLControl
   state_feedback_topic: ""      # 官方状态回读；留空则阻尼确认不可观测（看门狗不误报）
+  state_feedback_type: std_msgs/msg/String  # 回读消息类型；若官方用自定义 State 消息请改
   estop_topic: ""               # 独立急停话题（std_msgs/Bool）
   status_topic: /doggie/status
   reset_service: /doggie/reset
