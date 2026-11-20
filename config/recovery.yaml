@@ -10,7 +10,7 @@ meta:
   robot: "DeepRobotics Lite3 (no LiDAR)"
 
 detector:
-  rate_hz: 200
+  rate_hz: 200                   # 决策层采样率（Supervisor 按此调度，须整除 1/timestep）
   lowpass_cutoff_hz: 10.0
 
   # 主判据：姿态角门限
@@ -33,6 +33,8 @@ detector:
   height_min_m: 0.10
   height_dwell_s: 0.30
   use_height: true
+  # 以下为实机滤波预留项，当前 FallDetector 不读取（仿真用 height 兜底已足够）；
+  # 接入 ROS2 后由后端滤波/NaN 保护使用。
   use_contact: true
   contact_min_feet: 1
   quiet_omega_rad_s: 1.5
@@ -60,11 +62,12 @@ fsm:
   assess_supine_roll_deg: 120.0   # |roll|>=120° 视为仰翻（四脚朝天，不可恢复 -> SAFE_FAULT）
   assess_supine_pitch_deg: 80.0   # |pitch|>=80° 视为倒立/仰翻（不可恢复 -> SAFE_FAULT）
   assess_joint_tol_rad: 0.35      # 趴平时四腿偏离 Q_PRE >=0.35 rad 则先调官方 LieDown 整姿
-  liedown_traj_s: 1.5             # 官方 LieDownState 收腿时长（与 stand_duration 一致）
+  # 两个时长必须与 sim.stand.duration_per_phase_s 一致；doggie.config 在加载时校验。
+  liedown_traj_s: 1.5             # = duration_per_phase_s
   liedown_settle_s: 0.3           # 收腿后阻尼贴地稳定时间
 
   # S3 仿真轨迹：3 s（1.5 s+1.5 s），与官方参数默认时长一致
-  standup_traj_s: 3.0
+  standup_traj_s: 3.0             # = 2 × duration_per_phase_s
   standup_timeout_s: 20.0
 
   # 重试策略：最多 2 次，间隔 2 s，失败后人工复位
@@ -82,7 +85,7 @@ fsm:
   max_recoveries_per_min: 3
   require_manual_reset: true
 
-  # 可选：恢复摔倒前的速度指令（默认关闭，演示场景二可开启）
+  # 预留：恢复摔倒前的速度指令（当前 FSM 尚未实现，默认关闭）
   resume:
     enabled: false
     ramp_s: 1.0
@@ -92,18 +95,23 @@ sim:
   damping_kd: 2.5
   # 官方 lite3_control_parameters.cpp + standup_state.hpp 参数
   stand:
-    pre_height_m: 0.12
-    stand_height_m: 0.33
+    pre_height_m: 0.12             # 预站立蹲姿高度（StandUp 第一阶段终点）
+    stand_height_m: 0.33           # 站立高度（StandUp 第二阶段终点）
     # 官方 StandUpState 默认每阶段 1.5 s；仿真按相同时间参数复刻轨迹结构
     duration_per_phase_s: 1.5
     kp: 100.0
     kd: 2.5
-    pre_pose_rad: [0.0, -1.35453, 2.54948]   # 每腿 [HipX, HipY, Knee]
+    # 预站立姿态（每条腿 [HipX, HipY, Knee]）；同时用于翻倒注入与 FSM 整姿判定。
+    pre_pose_rad: [0.0, -1.35453, 2.54948]
   trot:
+    # 官方 ONNX 策略按 12 个仿真步决策一次；cmd_vel 为归一化指令 [-1, 1]，
+    # 实际速度上限 = 归一化值 × 下列上限。
     policy_decimation: 12
     vx_max_m_s: 0.8
+    vy_max_m_s: 0.8
     wz_max_rad_s: 0.8
 
+# 通信/阻尼看门狗参数：当前仿真路径不读取，接入 ROS2 后端后由 SafetyMonitor 使用。
 safety:
   backend_heartbeat_timeout_s: 0.50
   damping_ack_timeout_s: 0.50
@@ -111,7 +119,7 @@ safety:
   allow_real_fall_test: false   # 实机禁止自由摔倒；只允许受控倾斜
 
 logging:
-  rate_hz: 100
+  rate_hz: 100                   # 时间序列记录频率（Supervisor 按此调度）
   root: "data/raw"
   save_timeseries: true
   save_video: true

@@ -25,17 +25,28 @@ class Supervisor:
         self.fsm = fsm
         self.logger = logger
         self.frame_cb = frame_cb
-        self.frame_every = max(1, int(round(1.0 / (frame_fps * backend.model.opt.timestep))))
+        self.frame_every = self._period_steps(frame_fps, backend.model.opt.timestep)
+
+    @staticmethod
+    def _period_steps(hz: float, dt: float) -> int:
+        exact = 1.0 / (float(hz) * float(dt))
+        steps = int(round(exact))
+        if steps < 1 or abs(exact - steps) > 1e-6:
+            raise ValueError(
+                f"{hz} Hz 与 timestep {dt} s 不匹配：每帧需要 {exact:.6g} 个物理步"
+            )
+        return steps
 
     def run(self, max_time: float, det_hz: float = 200.0, log_hz: float = 100.0) -> dict:
         dt = self.backend.model.opt.timestep
-        det_every = max(1, int(round(1.0 / (det_hz * dt))))
-        log_every = max(1, int(round(1.0 / (log_hz * dt))))
+        det_every = self._period_steps(det_hz, dt)
+        log_every = self._period_steps(log_hz, dt)
 
         self.detector.reset()
         self.fsm.reset()
         t0 = self.backend.data.time
         i = 0
+        obs = None
 
         while True:
             self.backend.step()
@@ -64,7 +75,8 @@ class Supervisor:
                 self.frame_cb(t)
 
             if self.logger is not None and i % log_every == 0:
-                obs = self.backend.read()
+                if obs is None:
+                    obs = self.backend.read()
                 self.logger.row(
                     t=round(t, 4),
                     state=self.fsm.state.value,

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+
+from .config import resolve_config
 from .core.detector import FallDetector
 from .core.recovery_fsm import RecoveryFSM
+from .io.jitter import FallJitter
 from .io.sim_backend import SimBackend
 from .supervisor import Supervisor
 from .utils.logger import TrialLogger
@@ -21,16 +26,24 @@ def run_trial(
     run_dir: Path | None = None,
     video: Path | None = None,
     max_time: float = 60.0,
+    jitter: FallJitter | None = None,
+    seed: int | None = None,
 ) -> dict:
-    """注入翻倒姿态并跑完整恢复流程，返回结果与元数据。"""
+    """注入翻倒姿态并跑完整恢复流程，返回结果与元数据。
+
+    `jitter=None`（默认）为正式矩阵的确定性试验；传入 `FallJitter` 时用于
+    stress 套件，并通过 `seed` 保证单次试验可复现。
+    """
+    cfg = resolve_config(cfg)
     backend = SimBackend(cfg["sim"], scene=scene)
     detector = FallDetector(cfg["detector"])
     fsm = RecoveryFSM(cfg["fsm"], detector)
+    rng = np.random.default_rng(seed) if jitter is not None else None
 
     if fall in ("none", "stand"):
         backend.place_standing()
     else:
-        backend.place_fall(fall)
+        backend.place_fall(fall, jitter=jitter, rng=rng)
 
     logger = TrialLogger(run_dir) if run_dir is not None else None
 
@@ -56,7 +69,11 @@ def run_trial(
             writer.append_data(renderer.render())
 
     sup = Supervisor(backend, detector, fsm, logger=logger, frame_cb=frame_cb)
-    result = sup.run(max_time)
+    result = sup.run(
+        max_time,
+        det_hz=cfg["detector"]["rate_hz"],
+        log_hz=cfg["logging"]["rate_hz"],
+    )
 
     if writer is not None:
         writer.close()
@@ -72,6 +89,9 @@ def run_trial(
             "fsm": cfg["fsm"],
             "sim": cfg["sim"],
         },
+        "stress": (
+            {"jitter": asdict(jitter), "seed": seed} if jitter is not None else None
+        ),
         "result": result,
     }
     if logger is not None:

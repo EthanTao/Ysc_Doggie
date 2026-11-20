@@ -6,8 +6,21 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from ..core.params import (  # noqa: F401  (常量在此重新导出，兼容旧脚本)
+    PRE_HEIGHT,
+    Q_PRE,
+    SHANK,
+    STAND_HEIGHT,
+    THIGH,
+    expand_pre_pose,
+    hipy_by_height,
+    knee_by_height,
+    q_stand,
+    rpy_from_quat,
+)
 from ..core.types import Mode, Observation
 from .base import RobotBackend
+from .jitter import FallJitter, perturb_attitude, perturb_joints, perturb_rates
 
 ROOT = Path(__file__).resolve().parents[3]
 MODELS = ROOT / "sim" / "models" / "lite3"
@@ -15,37 +28,19 @@ MODELS = ROOT / "sim" / "models" / "lite3"
 LEGS = ("FL", "FR", "HL", "HR")
 JOINT_NAMES = tuple(f"{leg}_{part}_joint" for leg in LEGS for part in ("HipX", "HipY", "Knee"))
 
-# 官方 lite3_control_parameters.cpp
-THIGH = 0.20
-SHANK = 0.21
-PRE_HEIGHT = 0.12
-STAND_HEIGHT = 0.33
-
-# 翻倒姿态注入：全部统一采用官方预站立蜷腿角 Q_PRE（见 docs/08-feasibility.md）
-Q_PRE = np.array([0.0, -1.35453, 2.54948] * 4)          # 官方预站立（蜷腿）
+# 翻倒姿态注入：关节角统一使用配置里的 sim.stand.pre_pose_rad（默认 Q_PRE）。
+# 见 docs/08-feasibility.md。
 FALL_INJECTS = {
-    "front":      dict(axis=(0.0, 1.0, 0.0), deg=90.0,  joints=Q_PRE),
+    "front":      dict(axis=(0.0, 1.0, 0.0), deg=90.0),
     # 后翻 = 后仰 -90° + 前向回摆 4.0 rad/s：机体越过仰面后落到趴地姿态，
     # 平台 StandUp 可恢复。真正的四脚朝天（无回摆）起不来，作为边界分析单独展示。
-    "back":       dict(axis=(0.0, 1.0, 0.0), deg=-90.0, joints=Q_PRE, pitch_rate=4.0),
+    "back":       dict(axis=(0.0, 1.0, 0.0), deg=-90.0, pitch_rate=4.0),
     # 侧翻 = 侧倾 ±65° + 官方 Q_PRE 蜷腿角：落地后自然翻回趴地，四腿对称贴地起身。
-    "side_left":  dict(axis=(1.0, 0.0, 0.0), deg=65.0,  joints=Q_PRE),
-    "side_right": dict(axis=(1.0, 0.0, 0.0), deg=-65.0, joints=Q_PRE),
+    "side_left":  dict(axis=(1.0, 0.0, 0.0), deg=65.0),
+    "side_right": dict(axis=(1.0, 0.0, 0.0), deg=-65.0),
     # 趴地姿态（受阻场景用：跌入矮障碍物下方，靠高度判据检出）
-    "prone":      dict(axis=(1.0, 0.0, 0.0), deg=0.0,   joints=Q_PRE),
+    "prone":      dict(axis=(1.0, 0.0, 0.0), deg=0.0),
 }
-
-
-def hipy_by_height(h: float) -> float:
-    return -math.acos((THIGH**2 + h**2 - SHANK**2) / (2.0 * h * THIGH))
-
-
-def knee_by_height(h: float) -> float:
-    return math.pi - math.acos((THIGH**2 + SHANK**2 - h**2) / (2.0 * THIGH * SHANK))
-
-
-def q_stand() -> np.ndarray:
-    return np.array([0.0, hipy_by_height(STAND_HEIGHT), knee_by_height(STAND_HEIGHT)] * 4)
 
 
 class SimBackend(RobotBackend):
@@ -77,11 +72,10 @@ class SimBackend(RobotBackend):
         self.kd = float(st.get("kd", 2.5))
         self.damp_kd = float(sim_cfg.get("damping_kd", 2.5))
         self.T = float(st.get("duration_per_phase_s", 1.5))
-        self.q_stand = q_stand()
-        pre = np.asarray(st.get("pre_pose_rad", [0.0, -1.35453, 2.54948]), dtype=float)
-        if pre.size == 3:  # 配置里只写一条腿时自动复制到四条腿
-            pre = np.tile(pre, 4)
-        self.q_pre = pre
+        self.pre_height = float(st.get("pre_height_m", PRE_HEIGHT))
+        self.stand_height = float(st.get("stand_height_m", STAND_HEIGHT))
+        self.q_stand = q_stand(self.stand_height)
+        self.q_pre = expand_pre_pose(st.get("pre_pose_rad", Q_PRE))
 
         self.mode = Mode.HOLD
         self._su_t0: float | None = None
@@ -90,6 +84,15 @@ class SimBackend(RobotBackend):
         self._ld_q0: np.ndarray | None = None
 
         # RL 小跑（官方 ONNX 策略，用于误报/正常数据采集）
+        trot = sim_cfg.get("trot", {})
+        self.policy_decimation = int(trot.get("policy_decimation", 12))
+        self.cmd_max = np.array(
+            [
+                float(trot.get("vx_max_m_s", 0.8)),
+                float(trot.get("vy_max_m_s", 0.8)),
+                float(trot.get("wz_max_rad_s", 0.8)),
+            ]
+        )
         self.policy = None
         self.rl_target = self.q_stand.copy()
         self.cmd_vel = np.zeros(3)
@@ -104,7 +107,7 @@ class SimBackend(RobotBackend):
 
     def place_standing(self) -> None:
         self.reset()
-        self.data.qpos[2] = STAND_HEIGHT
+        self.data.qpos[2] = self.stand_height
         self.data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
         self.data.qpos[7:] = self.q_stand
         mujoco.mj_forward(self.model, self.data)
@@ -122,17 +125,44 @@ class SimBackend(RobotBackend):
                 bid = int(self.model.body_parentid[bid])
         return out
 
-    def place_fall(self, kind: str, clearance: float = 0.005) -> None:
-        """按翻倒类型放置：最低接触点上方 clearance，零速度。"""
+    def place_fall(
+        self,
+        kind: str,
+        clearance: float = 0.005,
+        *,
+        jitter: FallJitter | None = None,
+        rng: np.random.Generator | None = None,
+    ) -> None:
+        """按翻倒类型放置：最低接触点上方 clearance，零速度。
+
+        `jitter` 为 None 时保持正式矩阵的确定性；传入 `FallJitter` 时只在
+        姿态/关节角/角速度上叠加小扰动，仍按精确 geom 距离重新留间隙。
+        """
         if kind not in FALL_INJECTS:
             raise ValueError(f"unknown fall kind: {kind}")
+        if jitter is not None and not jitter.enabled:
+            jitter = None
+        if jitter is not None and rng is None:
+            raise ValueError("place_fall(jitter=...) requires an explicit numpy Generator")
+
         inj = FALL_INJECTS[kind]
         self.reset()
         a = math.radians(inj["deg"]) / 2.0
         axis = np.asarray(inj["axis"], dtype=float)
+        quat = np.concatenate([[math.cos(a)], math.sin(a) * axis])
+        joints = self.q_pre.copy()
+        if jitter is not None:
+            quat = perturb_attitude(rng, quat, jitter.attitude_deg)
+            # 关节扰动限制在标称姿态附近，避免越过机械限位。
+            joints = np.clip(
+                perturb_joints(rng, joints, jitter.joint_rad),
+                joints - 0.2,
+                joints + 0.2,
+            )
+
         self.data.qpos[2] = 0.5
-        self.data.qpos[3:7] = np.concatenate([[math.cos(a)], math.sin(a) * axis])
-        self.data.qpos[7:] = inj["joints"]
+        self.data.qpos[3:7] = quat
+        self.data.qpos[7:] = joints
         mujoco.mj_forward(self.model, self.data)
         # 用精确 geom 距离（包围球对蜷腿姿态太保守，会把机器人放到半空）
         min_dist = min(
@@ -144,7 +174,8 @@ class SimBackend(RobotBackend):
         if inj.get("pitch_rate"):
             # 叠加前向翻转动量（行走中侧向失稳）
             self.data.qvel[3:6] = [0.0, float(inj["pitch_rate"]), 0.0]
-        mujoco.mj_forward(self.model, self.data)
+        if jitter is not None:
+            self.data.qvel[3:6] = perturb_rates(rng, self.data.qvel[3:6], jitter.rate_rel)
         # 静态翻倒注入：本体处于失控/阻尼状态，不能 PD 硬撑站立姿态
         self.mode = Mode.DAMPING
 
@@ -155,10 +186,11 @@ class SimBackend(RobotBackend):
     def enable_policy(self, path: Path | None = None) -> None:
         from .policy import PolicyController
 
-        self.policy = PolicyController(path or MODELS / "policy.onnx")
+        self.policy = PolicyController(path or MODELS / "policy.onnx", max_cmd=self.cmd_max)
 
     def set_velocity(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0) -> None:
-        self.cmd_vel[:] = [vx, vy, wz]
+        """设置归一化指令 [-1, 1]；实际速度上限见 sim.trot.*。"""
+        self.cmd_vel[:] = np.clip([vx, vy, wz], -1.0, 1.0)
 
     def start_standup(self, t: float) -> None:
         self._su_t0 = t
@@ -187,7 +219,7 @@ class SimBackend(RobotBackend):
             return np.array(
                 [self._spline(self._su_q0[i], self.q_pre[i], el, self.T) for i in range(12)]
             )
-        hh = self._spline(PRE_HEIGHT, STAND_HEIGHT, el - self.T, self.T)
+        hh = self._spline(self.pre_height, self.stand_height, el - self.T, self.T)
         return np.array([0.0, hipy_by_height(hh), knee_by_height(hh)] * 4)
 
     def _liedown_target(self, t: float) -> np.ndarray:
@@ -221,11 +253,11 @@ class SimBackend(RobotBackend):
         elif self.mode == Mode.HOLD:
             self._pd(self.q_stand)
         elif self.mode == Mode.RL:
-            from .policy import DECIMATION, KD as RL_KD, KP as RL_KP
+            from .policy import KD as RL_KD, KP as RL_KP
 
             if self.policy is None:
                 self.enable_policy()
-            if self._rl_count % DECIMATION == 0:
+            if self._rl_count % self.policy_decimation == 0:
                 self.rl_target = self.policy.act(
                     self.data.qpos[3:7],
                     self.data.qvel[3:6],
@@ -247,10 +279,7 @@ class SimBackend(RobotBackend):
     # ------------------------------------------------------------------ sense
     def read(self) -> Observation:
         d = self.data
-        w, x, y, z = d.qpos[3:7]
-        roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
-        pitch = math.asin(float(np.clip(2.0 * (w * y - z * x), -1.0, 1.0)))
-        yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+        roll, pitch, yaw = rpy_from_quat(d.qpos[3:7])
 
         feet_legs = set()
         for i in range(d.ncon):

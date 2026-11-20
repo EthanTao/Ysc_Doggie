@@ -4,6 +4,9 @@ import csv
 import json
 from pathlib import Path
 
+# 兼容旧导入路径；配置解析与校验统一在 doggie.config。
+from ..config import ConfigError, load_config, resolve_config
+
 
 class TrialLogger:
     """单次试验的数据记录：时间序列 CSV + 元数据 JSON。"""
@@ -40,8 +43,4 @@ class TrialLogger:
             json.dump(meta, f, indent=2, ensure_ascii=False)
 
 
-def load_config(path: Path) -> dict:
-    import yaml
-
-    with open(path) as f:
-        return yaml.safe_load(f)
+__all__ = ["TrialLogger", "load_config", "resolve_config", "ConfigError"]

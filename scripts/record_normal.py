@@ -29,16 +29,21 @@ from doggie.utils.logger import load_config  # noqa: E402
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--vx", type=float, default=0.4)
-    ap.add_argument("--vy", type=float, default=0.0)
-    ap.add_argument("--wz", type=float, default=0.0)
+    ap.add_argument("--vx", type=float, default=0.4, help="归一化指令 [-1,1]（实际速度 = vx × trot.vx_max_m_s）")
+    ap.add_argument("--vy", type=float, default=0.0, help="归一化指令 [-1,1]")
+    ap.add_argument("--wz", type=float, default=0.0, help="归一化指令 [-1,1]")
     ap.add_argument("--seconds", type=float, default=60.0)
     ap.add_argument("--run-id", default="normal_vx0.4")
     args = ap.parse_args()
 
     cfg = load_config(ROOT / "config" / "recovery.yaml")
     backend = SimBackend(cfg["sim"])
-    detector = FallDetector(cfg["detector"])
+    # 日志频率同时也是检测器更新频率；低通滤波系数必须按实际更新频率计算。
+    log_hz = float(cfg["logging"]["rate_hz"])
+    det_cfg = dict(cfg["detector"])
+    det_cfg["rate_hz"] = log_hz
+    detector = FallDetector(det_cfg)
+    every = max(1, int(round(1.0 / (log_hz * backend.model.opt.timestep))))
     backend.place_standing()
     backend.start_rl()
     backend.set_velocity(args.vx, args.vy, args.wz)
@@ -54,7 +59,7 @@ def main() -> None:
     while backend.data.time < args.seconds:
         backend.step()
         step += 1
-        if step % 10 == 0:  # 100 Hz
+        if step % every == 0:
             obs = backend.read()
             detector.update(obs)
             max_roll = max(max_roll, abs(obs.roll_deg))
@@ -82,18 +87,22 @@ def main() -> None:
         w.writeheader()
         w.writerows(rows)
 
+    duration = float(backend.data.time)
+    distance = float(backend.data.qpos[0])
     result = {
         "run_id": args.run_id,
-        "cmd": {"vx": args.vx, "vy": args.vy, "wz": args.wz},
-        "duration_s": round(backend.data.time, 2),
+        "cmd_normalized": {"vx": args.vx, "vy": args.vy, "wz": args.wz},
+        "cmd_max": cfg["sim"]["trot"],
+        "duration_s": round(duration, 2),
         "false_positives": int(detector.latched),
         "first_trigger_s": trigger_t,
         "max_abs_roll_deg": round(max_roll, 2),
         "max_abs_pitch_deg": round(max_pitch, 2),
         "min_height_m": round(min_h, 4),
-        "distance_x_m": round(float(backend.data.qpos[0]), 3),
+        "distance_x_m": round(distance, 3),
+        "mean_speed_x_m_s": round(distance / duration, 4) if duration > 0 else 0.0,
         "wall_time_s": round(time.perf_counter() - t0, 1),
-        "config": {"detector": cfg["detector"]},
+        "config": {"detector": det_cfg, "trot": cfg["sim"]["trot"]},
     }
     (run_dir / "meta.json").write_text(json.dumps(result, indent=2, ensure_ascii=False))
     print(json.dumps(result, indent=2, ensure_ascii=False))

@@ -492,7 +492,7 @@ $$z_{\text{base}} \leftarrow z_{\text{base}} + (0.005 - d_{\min})$$
 
 ### 5.4 阈值 × 驻留时间网格扫描标定（56 组离线回放实验）
 
-为满足任务书“参数依据（10 分）”优秀档“给出实测分布、回差与持续时间的标定数据与选择理由”的要求，我们编写了离线标定脚本 `scripts/calibrate.py`，将正式 9 次翻倒与 3×60 s 正常小跑共 12 组完整传感器日志输入 `FallDetector`，在保持快速通道（$75^\circ / 0.15\text{ s}$）与高度兜底通道（$0.10\text{ m} / 0.30\text{ s}$）不变的前提下，对**主姿态角阈值 $\theta_{\text{thr}} \in \{40^\circ, 45^\circ, 50^\circ, 55^\circ, 60^\circ, 65^\circ, 70^\circ\}$（步长 $5^\circ$）**与**驻留时间 $T_{\text{dwell}} \in \{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0\}\text{ s}$** 进行了 **$7 \times 8 = 56$ 组全网格交叉扫描**（完整数据见 `data/calibration/threshold_sweep.csv`，热力图见图 5-12，代表性切片见表 5-4）。
+为满足任务书“参数依据（10 分）”优秀档“给出实测分布、回差与持续时间的标定数据与选择理由”的要求，我们编写了离线标定脚本 `scripts/calibrate_thresholds.py`，将正式 9 次翻倒与 3×60 s 正常小跑共 12 组完整传感器日志输入 `FallDetector`，在保持快速通道（$75^\circ / 0.15\text{ s}$）与高度兜底通道（$0.10\text{ m} / 0.30\text{ s}$）不变的前提下，对**主姿态角阈值 $\theta_{\text{thr}} \in \{40^\circ, 45^\circ, 50^\circ, 55^\circ, 60^\circ, 65^\circ, 70^\circ\}$（步长 $5^\circ$）**与**驻留时间 $T_{\text{dwell}} \in \{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0\}\text{ s}$** 进行了 **$7 \times 8 = 56$ 组全网格交叉扫描**（完整数据见 `data/calibration/threshold_sweep.csv`，热力图见图 5-12，代表性切片见表 5-4）。
 
 **表 5-4：姿态阈值 $\theta_{\text{thr}}$ × 驻留时间 $T_{\text{dwell}}$ 网格扫描标定核心数据表（摘自 `threshold_sweep.csv`）**
 

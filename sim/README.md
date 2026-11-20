@@ -40,8 +40,8 @@ python scripts/build_scene.py
 
 姿态注入与站立轨迹的实现见 `src/doggie/io/sim_backend.py`：
 
-- `place_fall(kind)`：`mj_geomDistance` 精确留 5 mm 间隙放置，支持前翻（pitch +90°）/后翻（pitch -90° + 回摆 4.0 rad/s）/侧翻（±60° + 前向动量 3.0 rad/s）/趴地；
-- `StandUp`：按官方两阶段三次样条 + IK 结构复刻（0.12→0.33 m，1.5 s + 1.5 s，kp=100/kd=2.5）；不是直接运行官方控制器。
+- `place_fall(kind)`：`mj_geomDistance` 精确留 5 mm 间隙放置，支持前翻（pitch +90°）/后翻（pitch -90° + 回摆 4.0 rad/s）/侧翻（±65° 蜷腿，阻尼下自然翻回趴地）/趴地；可选 `jitter` + `seed` 做随机化压力测试；
+- `StandUp`：按官方两阶段三次样条 + IK 结构复刻（`pre_height_m`→`stand_height_m`，每阶段 `duration_per_phase_s`，kp=100/kd=2.5）；不是直接运行官方控制器。
 
 ## 注意
 
