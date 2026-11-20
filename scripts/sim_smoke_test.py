@@ -10,40 +10,26 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 from pathlib import Path
 
 import mujoco
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from doggie.core.params import (  # noqa: E402
+    STAND_HEIGHT,
+    q_stand,
+    rpy_from_quat,
+)
+
 MODEL = ROOT / "sim" / "models" / "lite3" / "Lite3.xml"
 
 # 官方 lite3_control_parameters.cpp / standup_state.hpp
-PRE_HEIGHT = 0.12
-STAND_HEIGHT = 0.33
-THIGH = 0.20
-SHANK = 0.21
 KP = 100.0
 KD = 2.5
-
-
-def hipy_by_height(h: float) -> float:
-    return -math.acos((THIGH**2 + h**2 - SHANK**2) / (2.0 * h * THIGH))
-
-
-def knee_by_height(h: float) -> float:
-    return math.pi - math.acos((THIGH**2 + SHANK**2 - h**2) / (2.0 * THIGH * SHANK))
-
-
-def stand_pose() -> np.ndarray:
-    return np.array([0.0, hipy_by_height(STAND_HEIGHT), knee_by_height(STAND_HEIGHT)] * 4)
-
-
-def rpy_from_quat(q: np.ndarray) -> tuple[float, float]:
-    w, x, y, z = q
-    roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
-    pitch = math.asin(float(np.clip(2 * (w * y - z * x), -1.0, 1.0)))
-    return math.degrees(roll), math.degrees(pitch)
 
 
 def main() -> None:
@@ -56,7 +42,7 @@ def main() -> None:
     model.opt.timestep = 0.001
     data = mujoco.MjData(model)
 
-    target = stand_pose()
+    target = q_stand()
     mujoco.mj_resetData(model, data)
     data.qpos[2] = STAND_HEIGHT
     data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
@@ -69,7 +55,7 @@ def main() -> None:
         )
         mujoco.mj_step(model, data)
 
-    roll, pitch = rpy_from_quat(data.qpos[3:7])
+    roll, pitch, _ = (math.degrees(v) for v in rpy_from_quat(data.qpos[3:7]))
     print(f"model: {MODEL}")
     print(f"height: {data.qpos[2]:.4f} m (target {STAND_HEIGHT:.2f})")
     print(f"roll/pitch: {roll:.2f} / {pitch:.2f} deg")

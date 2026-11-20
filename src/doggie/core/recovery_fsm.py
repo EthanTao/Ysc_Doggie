@@ -5,10 +5,12 @@ import math
 import numpy as np
 
 from ..core.detector import FallDetector
+from ..core.params import Q_PRE, expand_pre_pose
 from ..core.types import FsmState as S
 from ..core.types import Mode, Observation
 
-DEFAULT_Q_PRE = np.array([0.0, -1.35453, 2.54948] * 4, dtype=float)
+# 兼容旧名字；预站立姿态只在 core.params 定义一次。
+DEFAULT_Q_PRE = Q_PRE
 
 
 class RecoveryFSM:
@@ -59,10 +61,7 @@ class RecoveryFSM:
         self.assess_joint_tol = float(fsm_cfg.get("assess_joint_tol_rad", 0.35))
         self.liedown_traj = float(fsm_cfg.get("liedown_traj_s", 1.5))
         self.liedown_settle = float(fsm_cfg.get("liedown_settle_s", 0.3))
-        pre = np.asarray(fsm_cfg.get("pre_pose_rad", DEFAULT_Q_PRE), dtype=float)
-        if pre.size == 3:
-            pre = np.tile(pre, 4)
-        self.q_pre = pre
+        self.q_pre = expand_pre_pose(fsm_cfg.get("pre_pose_rad", DEFAULT_Q_PRE))
 
         self.reset()
 

@@ -25,13 +25,18 @@ DECIMATION = 12
 
 
 class PolicyController:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, max_cmd=None) -> None:
         import onnxruntime as ort
 
         self.session = ort.InferenceSession(
             str(path), providers=["CPUExecutionProvider"]
         )
         self.input_name = self.session.get_inputs()[0].name
+        self.max_cmd = (
+            MAX_CMD.copy() if max_cmd is None else np.asarray(max_cmd, dtype=np.float64)
+        )
+        if self.max_cmd.shape != (3,):
+            raise ValueError("max_cmd must have 3 elements [vx, vy, wz]")
         self.last_action = np.zeros(12, dtype=np.float64)
         self.target = DEFAULT_POSE.copy()
 
@@ -56,7 +61,7 @@ class PolicyController:
             [
                 omega_body * OMEGA_SCALE,
                 projected_gravity,
-                np.asarray(cmd_vel, dtype=np.float64) * MAX_CMD,
+                np.asarray(cmd_vel, dtype=np.float64) * self.max_cmd,
                 joint_pos - DEFAULT_POSE,
                 joint_vel * DOF_VEL_SCALE,
                 self.last_action,

@@ -108,7 +108,7 @@ def run_once(viewer, backend, detector, fsm, args, fall: str, scene: str, label:
     backend.set_mode(fsm.monitor_mode)
 
     dt = backend.model.opt.timestep
-    det_every = 5  # 200 Hz
+    det_every = max(1, int(round(1.0 / (detector.rate * dt))))
     t_start = backend.data.time
     wall_start = time.perf_counter()
     last_sync = 0.0

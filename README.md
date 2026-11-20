@@ -59,7 +59,7 @@
 | 失败与超时（15） | 3/3 停安全并提示，无无限重试 | 20 s 超时、最多 2 次、退避 2 s、故障锁存 |
 | 参数依据（10） | 回差与持续时间标定数据 | 网格扫描 + 实测分布 + 迟滞实验 |
 
-> 说明：平台 `StandUp` 只能从趴地起身。正式 9 次的翻倒姿态按此构造：前翻落到趴地；侧翻带前向动量翻正到趴地；后翻带前向回摆越过仰面落到趴地。**真正的四脚朝天（无回摆）仍然起不来**，作为边界分析与失败案例单独展示，不混入正式 9 次。
+> 说明：平台 `StandUp` 只能从趴地起身。正式 9 次的翻倒姿态按此构造：前翻落到趴地；侧翻以 ±65° 蜷腿姿态注入，阻尼下自然翻回趴地；后翻带前向回摆越过仰面落到趴地。**真正的四脚朝天（无回摆）仍然起不来**，作为边界分析与失败案例单独展示，不混入正式 9 次。
 
 ## 文档索引
 
@@ -69,6 +69,7 @@
 - [答辩 PPT 逐页稿与 AI 生成提示词](docs/07-slides.md)
 - [仿真可行性预研（含起身边界实测）](docs/08-feasibility.md)
 - [实机验收指南（ROS2 话题、四阶段 SOP、指标口径与风险）](docs/09-real-machine.md)
+- [参数单一来源与随机化压力测试](docs/10-stress.md)
 - [汇报数据包（指标表 + 7 张图）](docs/report/data-pack.md)
 
 ## 目录结构
@@ -108,7 +109,10 @@ python scripts/watch_sim.py --playlist side_left@flat,prone@blocked --speed 0.5
 # 单项可写 fall@scene；省略 @scene 时用 --scene（默认 flat）
 python scripts/watch_sim.py --fall prone --scene blocked --speed 0.5
 
-# 5. 实机（默认只读干跑，必须显式 --enable-actuation 才下发运动指令）
+# 5. 随机化压力测试（不覆盖正式 9 次矩阵）
+python scripts/run_stress.py --repeats 30 --seed 0
+
+# 6. 实机（默认只读干跑，必须显式 --enable-actuation 才下发运动指令）
 source /opt/ros/jazzy/setup.bash                    # 按实际发行版
 python scripts/selftest_ros2.py --duration 15       # ROS2 回环自检（不需要机器人）
 python scripts/run_real.py --duration 60                  # 只读验证话题/姿态

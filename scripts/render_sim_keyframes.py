@@ -27,7 +27,8 @@ sys.path.insert(0, str(ROOT / "src"))
 from doggie.core.detector import FallDetector  # noqa: E402
 from doggie.core.recovery_fsm import RecoveryFSM  # noqa: E402
 from doggie.core.types import FsmState as S  # noqa: E402
-from doggie.io.sim_backend import Q_PRE, SimBackend  # noqa: E402
+from doggie.core.params import Q_PRE  # noqa: E402
+from doggie.io.sim_backend import SimBackend  # noqa: E402
 from doggie.utils.logger import load_config  # noqa: E402
 
 OUT_DIR = ROOT / "docs" / "report" / "sim_shots"
@@ -169,7 +170,7 @@ def capture_scenario(
 
     renderer = mujoco.Renderer(backend.model, 720, 1280)
     dt = backend.model.opt.timestep
-    det_every = max(1, int(round(1.0 / (200.0 * dt))))
+    det_every = max(1, int(round(1.0 / (detector.rate * dt))))
 
     captured: dict[int, Image.Image] = {}
     obs = backend.read()

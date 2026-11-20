@@ -45,9 +45,16 @@ class Supervisor:
 
     @staticmethod
     def _period_steps(hz: float, fixed_dt: float | None) -> int | None:
+        """固定步长后端按物理步调度；实机后端按时间戳调度（返回 None）。"""
         if fixed_dt is None:
             return None
-        return max(1, int(round(1.0 / (hz * fixed_dt))))
+        exact = 1.0 / (float(hz) * float(fixed_dt))
+        steps = int(round(exact))
+        if steps < 1 or abs(exact - steps) > 1e-6:
+            raise ValueError(
+                f"{hz} Hz 与 timestep {fixed_dt} s 不匹配：每帧需要 {exact:.6g} 个物理步"
+            )
+        return steps
 
     def _status(self, t: float, obs) -> dict:
         summary = self.fsm.summary()
@@ -96,6 +103,8 @@ class Supervisor:
         t0 = backend.now()
         last_det = last_log = last_status = last_frame = t0
         i = 0
+        obs = None
+
         while True:
             backend.tick()
             i += 1
@@ -169,7 +178,8 @@ class Supervisor:
                 due = (i % log_every == 0) if log_every else (t - last_log >= log_dt)
                 if due:
                     last_log = t
-                    obs = backend.read()
+                    if obs is None:
+                        obs = backend.read()
                     self.logger.row(
                         t=round(t, 4),
                         state=self.fsm.state.value,
