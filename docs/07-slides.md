@@ -3,7 +3,7 @@
 > **适用场景**：《四足机器人 Lite3 实践任务书（修订版）》任务二（恢复运控）结题验收与现场答辩  
 > **建议答辩时长**：8–10 分钟演讲 + 5 分钟评委问答（共 14 页核心幻灯片）  
 > **配套报告**：`docs/06-report.md`  
-> **配置与代码基线**：`config/recovery.yaml`（`f0a41cd425ac`） / Git Commit `8df231a`
+> **配置与代码基线**：`config/recovery.yaml`（`99257fbee6d8`） / Git Commit `615d7b0`
 
 ---
 
@@ -21,7 +21,7 @@
   - **考核任务**：任务二 —— 恢复运控（摔倒检测 + 状态机触发 + 起身动作调用 + 失败锁存）
   - **实验平台**：云深处绝影 Lite3（无激光雷达版） / MuJoCo 4.0 官方 MJCF 物理试验台
   - **五大完整交付物**：
-    1. 唯一参数源配置：`config/recovery.yaml`（SHA-256: `f0a41cd425ac`）
+    1. 唯一参数源配置：`config/recovery.yaml`（SHA-256: `99257fbee6d8`）
     2. 纯逻辑核心代码：`FallDetector` + `RecoveryFSM` + `RobotBackend`
     3. 全量实测数据集：`data/raw/2026-11-19_*`（9 正式 + 3 受阻 + 3×60 s 正常小跑）
     4. 56 组网格标定数据：`data/calibration/threshold_sweep.csv`
@@ -76,7 +76,7 @@
     - `SimBackend`（MuJoCo 4.0）：加载官方 Lite3 MJCF、官方 `StandUp/LieDown` 样条与 `policy.onnx`。
     - `Ros2Backend`（实机对接）：映射 `/IMU_DATA`、`/JOINTS_DATA`、官方状态机切换指令与 `/doggie/status`。
   - **4. 唯一参数源（`config/recovery.yaml`）**：
-    - 严禁代码硬编码魔法数字；每次实验自动记录配置 SHA-256 哈希（`f0a41cd425ac`），确保 100% 可复现。
+    - 严禁代码硬编码魔法数字；每次实验自动记录配置 SHA-256 哈希（`99257fbee6d8`），确保 100% 可复现。
 - **右栏（配图/架构框图）**：
   - 插入架构图（对应报告图 1-1 `RecoverySupervisor` 模块数据流图）：展示 `Observation -> FallDetector -> FallEvent -> RecoveryFSM -> Mode(DAMPING/LIEDOWN/STANDUP/HOLD/RL) -> RobotBackend (SimBackend / Ros2Backend)`。
   - 辅助截图：`docs/assets/sim_smoke.png`
@@ -122,10 +122,10 @@
 - **核心结论金句（Banner）**：
   > **“正常小跑最大姿态角仅 1.71°，距 50° 阈值留有 48.29°（29.2 倍）安全裕度；56 组二维网格扫描定量证明 (50°, 0.30 s) 处于检出不退化的最优工作点。”**
 - **左栏（正常小跑实测包络与网格标定定量结论）**：
-  - **1. 官方 `policy.onnx` 正常小跑 3×60 s（180 s / 36,000 帧）实测**：
+  - **1. 官方 `policy.onnx` 正常小跑 3×60 s（180 s / 18,000 帧，100 Hz 记录；$v_x$ 为归一化指令）实测**：
     - `normal_turn` ($v_x=0.3, \omega_z=0.5$)：$\max|\phi|=0.62^\circ, \max|\theta|=1.56^\circ, \min h=0.319\text{ m}$，**0 误报**。
-    - `normal_vx0.4` ($v_x=0.4$)：$\max|\phi|=\mathbf{1.06^\circ}, \max|\theta|=1.41^\circ, \min h=0.320\text{ m}$，**0 误报**。
-    - `normal_vx0.6` ($v_x=0.6$)：$\max|\phi|=0.93^\circ, \max|\theta|=\mathbf{1.71^\circ}, \min h=0.321\text{ m}$，**0 误报**。
+    - `normal_vx0.4` ($v_x=0.4$，实测均速约 $0.25\text{ m/s}$)：$\max|\phi|=\mathbf{1.06^\circ}, \max|\theta|=1.41^\circ, \min h=0.320\text{ m}$，**0 误报**。
+    - `normal_vx0.6` ($v_x=0.6$，实测均速约 $0.44\text{ m/s}$)：$\max|\phi|=0.93^\circ, \max|\theta|=\mathbf{1.71^\circ}, \min h=0.321\text{ m}$，**0 误报**。
   - **2. 56 组网格扫描（阈值 $40^\circ\text{–}70^\circ \times$ 驻留 $0.1\text{–}1.0\text{ s}$）核心发现**：
     - **为什么不选 $\ge 65^\circ$？** 侧翻初始倾角 $65^\circ$，落地后在阻尼下向趴地回落；当阈值 $\ge 65^\circ$ 时主姿态通道漏检，**最大时延从 $0.31\text{ s}$ 阶跃恶化至 $0.98\text{ s}$**（退化为等趴平后靠高度兜底）。选 **$50^\circ$** 上留 $15^\circ$ 检出裕度，下留 $48.29^\circ$ 防误报裕度。
     - **为什么不选 $\ge 0.50\text{ s}$？** 当驻留 $\ge 0.50\text{ s}$ 时，侧翻在 $0.45\text{ s}$ 已回落至 $50^\circ$ 以内导致姿态计时中断，时延同样突跳至 $0.98\text{ s}$。选 **$0.30\text{ s}$** 兼具抗瞬态冲击与 $0.305\text{ s}$ 快检能力。
@@ -402,7 +402,7 @@
 - 顶部金句：不重新发明底层步态，而是构建 100% 严守“先安全阻尼、后整姿起身”的智能决策层——正式 9 次翻倒 100% 检出并恢复（平均起身 4.21 s），3 次受阻 100% 限次锁存，180 s 小跑 0 误报。
 - 左栏要点：
   - 平台：云深处绝影 Lite3（无激光雷达版） / MuJoCo 4.0 官方 MJCF 物理试验台
-  - 配置基线：config/recovery.yaml (SHA-256: f0a41cd425ac) | Git Commit: 8df231a
+  - 配置基线：config/recovery.yaml (SHA-256: 99257fbee6d8) | Git Commit: 615d7b0
   - 完整交付物：核心纯逻辑代码 + 9+3 实测时间序列 + 56 组网格标定数据 + 4 段未剪辑 MP4 视频
 - 右栏视觉：【替换图片：docs/report/sim_shots/grid_overview.png】
 

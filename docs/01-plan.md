@@ -347,7 +347,7 @@ sim/
 ### 7.2 标定实验
 
 1. **数据采集**
-   - 正常：平地小跑 0.4 / 0.6 m/s、原地转向，各 60 s，记录 roll/pitch 包络；
+   - 正常：平地小跑归一化指令 0.4 / 0.6、原地转向，各 60 s，记录 roll/pitch 包络；
    - 翻倒：4 种姿态静态各 10 s，记录倾角分布；
    - 动态：冲量失稳 3 次，记录全过程。
 2. **阈值扫描**：roll/pitch 阈值 30°–70°（步长 2.5°），统计检出率、误报数、平均时延。
@@ -445,7 +445,7 @@ Doggie/
 ├── scripts/
 │   ├── run_trial.py
 │   ├── run_matrix.py
-│   ├── calibrate.py
+│   ├── calibrate_thresholds.py
 │   ├── plot_results.py
 │   └── record_video.py
 ├── tests/
