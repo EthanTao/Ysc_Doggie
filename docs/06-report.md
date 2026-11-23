@@ -2,10 +2,10 @@
 
 > **项目名称**：Doggie —— 四足机器人 Lite3 摔倒检测与自主恢复运控系统  
 > **适用平台**：云深处科技（DeepRobotics）绝影 Lite3 四足机器人（无激光雷达运动控制版）  
-> **配置基线**：`config/recovery.yaml`（SHA-256 前 12 位：`99257fbee6d8`）  
-> **代码版本**：Git Commit `615d7b0`  
+> **配置基线**：`config/recovery.yaml`（SHA-256 前 12 位：`0f4ace0f9e2d`）  
+> **代码版本**：Git Commit `615d7b0` + 工作区（主路径恢复 `nominal`；路线 2 交接）  
 > **数据源**：`data/processed/matrix_2026-11-19.csv`、`data/raw/2026-11-19_*`、`data/calibration/threshold_sweep.csv`  
-> **报告日期**：2026 年 11 月 20 日  
+> **报告日期**：2026 年 11 月 23 日  
 
 ---
 
@@ -154,6 +154,8 @@ $$\tilde{\phi}_k = \tilde{\phi}_{k-1} + \alpha \big(\phi_k - \tilde{\phi}_{k-1}\
    - **为什么选 $0.10\text{ m}$？** 官方 `StandUpState` 与 `LieDownState` 定义的标准预站立蹲姿高度为 `pre_height = 0.12 m`，正常小跑最低高度为 `0.319 m`，而机身腹部完全贴地时的质心高度约为 `0.054–0.073 m`。将门限设为 **$0.10\text{ m}$**，既低于官方正常卧倒高度 `0.12 m`（留有 $2\text{ cm}$ 安全余量，不会把正常的 `LieDown` 待机误判为摔倒），又能可靠捕获腹部贴地或受阻坍塌状态。
 
 只要上述三个通道中任意一个率先满足驻留条件，检测器立即调用 `_confirm(obs, cue)` 生成包含触发时刻 `t`、翻倒类型 `kind`、触发通道 `cue` 及当时姿态/高度快照的 `FallEvent` 对象。
+
+> **2026-11-23 工程补充**：为可选 `full_flip` 附加实验，检测器还实现了高速翻转通道（姿态越限 + $|\boldsymbol{\omega}|\ge5\ \text{rad/s}$ 持续 0.05 s）与“首个判据越限时重力方向”分类；主路径 `nominal` 的正式 9 次仍为下表所示的 0.155–0.305 s 三通道结果，新增通道不会改变该矩阵。详细交接见 `docs/11-handoff.md`。
 
 ### 2.3 事件锁存、迟滞回差（Hysteresis）与历史峰值翻倒分类
 
@@ -382,7 +384,7 @@ $$z_{\text{base}} \leftarrow z_{\text{base}} + (0.005 - d_{\min})$$
 
 ## 5. 实验结果与参数标定
 
-所有实验均由自动化评测脚本 `scripts/run_matrix.py` 在固定配置 `config/recovery.yaml`（哈希 `99257fbee6d8`）下一次性连续运行生成，原始 100 Hz 时间序列与元数据保存在 `data/raw/2026-11-19_*`，汇总表保存在 `data/processed/matrix_2026-11-19.csv`。
+所有实验均由自动化评测脚本 `scripts/run_matrix.py` 在固定配置 `config/recovery.yaml`（哈希 `0f4ace0f9e2d`）下一次性连续运行生成，原始 100 Hz 时间序列与元数据保存在 `data/raw/2026-11-19_*`，汇总表保存在 `data/processed/matrix_2026-11-19.csv`。
 
 ### 5.1 正式 9 次测试矩阵明细与时延/耗时分析
 

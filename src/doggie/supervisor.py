@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Callable
 
 from .core.detector import FallDetector
@@ -42,6 +43,9 @@ class Supervisor:
         self.status_hz = status_hz
         self.safety_code: str | None = None
         self.safety_fault_t: float | None = None
+        # 累计机体转速（对 |omega| 积分），用于证明全翻确实转过 360°。
+        self._rotation_rad = 0.0
+        self._last_obs_t: float | None = None
 
     @staticmethod
     def _period_steps(hz: float, fixed_dt: float | None) -> int | None:
@@ -72,6 +76,7 @@ class Supervisor:
             "feet": obs.feet_contact,
             "latency_s": summary.get("latency_s"),
             "detect_delay_s": summary.get("detect_delay_s"),
+            "rotation_deg": round(math.degrees(self._rotation_rad), 1),
         }
 
     def run(
@@ -97,6 +102,8 @@ class Supervisor:
         self.fsm.reset()
         self.safety_code = None
         self.safety_fault_t = None
+        self._rotation_rad = 0.0
+        self._last_obs_t = None
         if self.safety is not None:
             self.safety.reset()
 
@@ -115,6 +122,12 @@ class Supervisor:
             if do_det:
                 last_det = t
                 obs = backend.read()
+                if self._last_obs_t is not None:
+                    dt_obs = max(0.0, float(obs.t) - self._last_obs_t)
+                    self._rotation_rad += math.sqrt(
+                        sum(float(w) * float(w) for w in obs.omega)
+                    ) * dt_obs
+                self._last_obs_t = float(obs.t)
 
                 # 1) 安全看门狗优先：通信丢失/阻尼无确认 -> 锁存 + 兜底阻尼
                 if self.safety is not None and self.safety_code is None:
@@ -207,4 +220,10 @@ class Supervisor:
         out["timeout"] = "t_recovered" not in m and self.fsm.state != S.S5_SAFE_FAULT
         out["recovered"] = self.fsm.state == S.S0_MONITOR and "t_recovered" in m
         out["safety_fault"] = self.safety_code
+        rotated = math.degrees(self._rotation_rad)
+        injected = float(getattr(self.backend, "injected_rotation_deg", 0.0))
+        out["base_rotation_deg"] = round(rotated, 1)
+        # 仿真注入的初始翻转角 + 运行中累计转动，用于报告是否真的翻过 360°；
+        # 实机没有注入角，退化为运行期间的累计转动。
+        out["flip_rotation_deg"] = round(injected + rotated, 1)
         return out

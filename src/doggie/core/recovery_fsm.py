@@ -39,8 +39,16 @@ class RecoveryFSM:
         self.settle_omega = float(fsm_cfg.get("settle_omega_rad_s", 0.15))
         self.settle_omega_body = float(fsm_cfg.get("settle_omega_body_rad_s", 0.15))
         self.quiet_sustain = float(fsm_cfg.get("quiet_sustain_s", 0.3))
-        self.monitor_mode = (
-            Mode.DAMPING if fsm_cfg.get("monitor_mode", "damping") == "damping" else Mode.HOLD
+        monitor_mode = fsm_cfg.get("monitor_mode", "damping")
+        monitor_modes = {
+            "damping": Mode.DAMPING,
+            "hold": Mode.HOLD,
+            "rl": Mode.RL,
+        }
+        self.monitor_mode = monitor_modes.get(monitor_mode, Mode.HOLD)
+        post_fall_mode = fsm_cfg.get("post_fall_monitor_mode")
+        self.post_fall_monitor_mode = (
+            monitor_modes.get(post_fall_mode) if post_fall_mode is not None else None
         )
         self.standup_traj = float(fsm_cfg.get("standup_traj_s", 3.0))
         self.standup_timeout = float(fsm_cfg.get("standup_timeout_s", 20.0))
@@ -93,6 +101,26 @@ class RecoveryFSM:
         self.fault_code = None
         self.strategy = ""
         self.detector.clear()
+        return True
+
+    def trigger_recovery(self, t: float, kind: str = "manual") -> bool:
+        """人工触发一次恢复（实机 /doggie/recover 服务）。
+
+        只允许在 S0 空闲态调用；不跳过安全流程，仍先进入 S1 纯阻尼，
+        等机体静止后再由 S2 评估当前姿态。用于机器人在外部作用下已经摔倒、
+        但检测器未触发或操作员希望立即恢复的场景，**不会主动制造摔倒**。
+        """
+        if self.state != S.S0_MONITOR or self.detector.latched:
+            return False
+        self.m["t_fall_confirm"] = t
+        self.m["fall_kind"] = kind
+        self.m["fall_cue"] = "manual"
+        self.m["detect_delay_s"] = 0.0
+        self._s1_t0 = t
+        self._quiet_since = None
+        self.m["t_damping"] = t
+        self._go(S.S1_SAFE_DAMPING, "manual_recovery", t)
+        self.mode = Mode.DAMPING
         return True
 
     def force_fault(self, t: float, code: str) -> bool:
@@ -163,6 +191,8 @@ class RecoveryFSM:
         if self.state == S.S0_MONITOR:
             self.mode = self.monitor_mode
             if self.detector.latched:
+                if self.post_fall_monitor_mode is not None:
+                    self.monitor_mode = self.post_fall_monitor_mode
                 ev = self.detector.event
                 self.m["t_fall_confirm"] = ev.t if ev else t
                 self.m["fall_kind"] = ev.kind if ev else "?"

@@ -16,27 +16,33 @@
 - [x] 摔倒检测器 v0（含单元测试）
 - [x] 恢复状态机 v0（含超时/重试/锁存）
 - [x] 正式 9 次矩阵 + 受阻 3 次（检出 9/9、顺序 9/9、起身 9/9、受阻 3/3）
+- [x] 附加实验：完整 360° 全翻 profile（`full_flip`，前/后/侧各 3 次 9/9；非主路径）
 - [x] 官方 ONNX 策略小跑误报测试（3×60 s，0 误报）
-- [x] 阈值 / 回差 / 驻留时间标定
+- [x] 动态路沿绊倒场景（正常站姿起跑，实际碰撞触发摔倒；独立于正式姿态矩阵）
+- [x] 阈值 / 回差 / 驻留时间 + 高速翻转通道标定
 - [x] ROS2 实机后端与安全看门狗（`Ros2Backend`、`SafetyMonitor`、`run_real.py`；默认只读干跑）
+- [x] 实机恢复 profile 与人工触发接口 `/doggie/recover`（不主动制造摔倒）
 - [ ] 实机联调与受控倾斜验收（按 `docs/09-real-machine.md` 四阶段 SOP）
+- [ ] 路线 2：背部着地 RL 自翻正（交接见 `docs/11-handoff.md`，默认关闭的附加实验）
 - [x] 技术报告与答辩材料（`docs/06-report.md`、`docs/07-slides.md`）
 
-当前 MuJoCo 演示按官方 `StandUpState` 默认时长设置每阶段 1.5 s。仿真实现复刻轨迹结构，不是直接调用官方控制器。
+当前 MuJoCo 演示按官方 `StandUpState` 默认时长设置每阶段 1.5 s。仿真实现复刻轨迹结构，不是直接调用官方控制器。除了平地姿态注入外，新增了从站姿小跑、撞上 11 cm 路沿后趴倒并完成起身的动态场景。
+
+官方 `Lite3_rl_deploy` 只提供一份平地盲走 PPO 策略（`policy/ppo/policy.onnx`），没有可直接部署的越障权重。为避免碰撞瞬间的关节目标突变和反馈尖峰造成“乱蹬”，仿真在**检测到与路沿实际接触**后的 0.4 s 内启用 RL 安全限幅：策略目标一阶低通、关节角速度限幅、阻尼增益由 1.0 提到 2.0；正常平地步态不受影响（`sim.rl_guard`）。这是仿真安全层，不修改官方网络权重。
 
 ## 当前完整矩阵（2026-11-19，官方 MJCF 展示场景）
 
 | 指标 | 结果 |
 |---|---|
 | 摔倒判定 | 9/9，误报 0 |
-| 判定时延 | 0.155–0.305 s（优秀档 ≤2 s） |
+| 判定时延 | **0.155–0.305 s**（优秀档 ≤2 s） |
 | 先安全后起身 | 9/9（每次 `t_damping < t_standup`） |
 | 起身成功 | **9/9**：前翻 3/3、侧翻 3/3、后翻 3/3（后翻采用前向回摆构造落到趴地） |
 | 起身耗时 | 4.21 s（优秀档 ≤15 s） |
 | 受阻处理 | 3/3 停 `S5_SAFE_FAULT` + 故障码，尝试 2 次后锁存 |
-| 正常小跑误报 | 3×60 s，**0 次**；包络 |roll| ≤1.06°、|pitch| ≤1.71° |
+| 正常小跑误报 | 3×60 s，**0 次**；包络 \|roll\| ≤1.06°、\|pitch\| ≤1.71° |
 
-复现：`python scripts/build_scene.py`（首次或改场景后）→ `python scripts/run_matrix.py --suite all`；明细见 `data/processed/summary.md`，视频在 `videos/`。
+复现：`python scripts/build_scene.py`（首次或改场景后）→ `python scripts/run_matrix.py --suite all`；主路径为原来的 65–90° 摔倒场景，`--profile full_flip` 可选做完整 360° 附加实验。明细见 `data/processed/summary.md`，视频在 `videos/`。
 
 展示视频（官方 MJCF 场景，1280×720）：
 
@@ -44,6 +50,8 @@
 - `videos/demo_mjcf_side.mp4`（侧翻 → 起身）
 - `videos/demo_mjcf_back.mp4`（后翻 → 起身）
 - `videos/demo_mjcf_blocked.mp4`（趴地受阻 → 安全故障）
+- `videos/demo_mjcf_trip.mp4`（小跑撞路沿 → RL 安全限幅 → 检测 → 起身）
+- `videos/full_flip/`（可选：完整 360° 附加实验录像）
 
 汇报数据：`python scripts/calibrate_thresholds.py` → `python scripts/make_report_pack.py`，输出 `docs/report/data-pack.md` 与 7 张图。
 
@@ -53,13 +61,13 @@
 
 | 考核项 | 优秀档要求 | 本方案对应手段 |
 |---|---|---|
-| 摔倒检测（25） | 9/9 正确，误报 0，时延 ≤2 s | 多判据 + 0.3 s 驻留 + 回差；9 种姿态全覆盖 |
+| 摔倒检测（25） | 9/9 正确，误报 0，时延 ≤2 s | 多判据 + 驻留 + 回差；9 种姿态全覆盖 |
 | 恢复流程（25） | 9/9 先安全后起身，能说明切换条件 | 显式 FSM，转移条件与时间戳全部落盘 |
 | 起身完成（25） | 9/9 成功，平均 ≤15 s | 复用平台站立轨迹；后翻采用「后仰 + 前向回摆」构造落到趴地 |
 | 失败与超时（15） | 3/3 停安全并提示，无无限重试 | 20 s 超时、最多 2 次、退避 2 s、故障锁存 |
 | 参数依据（10） | 回差与持续时间标定数据 | 网格扫描 + 实测分布 + 迟滞实验 |
 
-> 说明：平台 `StandUp` 只能从趴地起身。正式 9 次的翻倒姿态按此构造：前翻落到趴地；侧翻以 ±65° 蜷腿姿态注入，阻尼下自然翻回趴地；后翻带前向回摆越过仰面落到趴地。**真正的四脚朝天（无回摆）仍然起不来**，作为边界分析与失败案例单独展示，不混入正式 9 次。
+> 说明：平台 `StandUp` 只能从趴地起身。主路径正式 9 次按此构造：前翻落到趴地；侧翻以 ±65° 蜷腿姿态注入，阻尼下自然翻回趴地；后翻带前向回摆越过仰面落到趴地。**真正的四脚朝天（背部静止着地）仍然起不来**，作为边界分析与失败案例单独展示，不混入正式 9 次。`full_flip` 仅是可选的 360° 附加实验，设计目标仍是落回趴地；实机不会主动制造摔倒。
 
 ## 文档索引
 
@@ -70,6 +78,7 @@
 - [仿真可行性预研（含起身边界实测）](docs/08-feasibility.md)
 - [实机验收指南（ROS2 话题、四阶段 SOP、指标口径与风险）](docs/09-real-machine.md)
 - [参数单一来源与随机化压力测试](docs/10-stress.md)
+- [交接文档：背部着地自翻正（路线 2）与真机接入](docs/11-handoff.md)
 - [汇报数据包（指标表 + 7 张图）](docs/report/data-pack.md)
 
 ## 目录结构
@@ -103,9 +112,11 @@ python scripts/build_scene.py
 MUJOCO_GL=egl python scripts/sim_smoke_test.py --render smoke.png
 
 # 4. 实时观看仿真（MuJoCo 窗口，0.5 倍速）
-python scripts/watch_sim.py --playlist all --speed 0.5 --loop      # 5 类场景连播，自动切 flat/blocked
-python scripts/watch_sim.py --fall side_left --speed 0.5           # 单场景
-python scripts/watch_sim.py --playlist side_left@flat,prone@blocked --speed 0.5
+python scripts/watch_sim.py --playlist all --speed 0.5 --loop      # 常规翻倒 + 动态路沿绊倒 + 受阻场景
+python scripts/watch_sim.py --fall side_left --speed 0.5           # 单场景（默认 nominal）
+python scripts/watch_sim.py --fall side_left --profile full_flip --speed 0.25  # 可选 360° 附加实验
+python scripts/watch_sim.py --fall trip --speed 0.5                # 小跑撞路沿，非预摆姿态摔倒
+python scripts/watch_sim.py --playlist side_left@flat,trip,prone@blocked --speed 0.5
 # 单项可写 fall@scene；省略 @scene 时用 --scene（默认 flat）
 python scripts/watch_sim.py --fall prone --scene blocked --speed 0.5
 
@@ -116,12 +127,16 @@ python scripts/run_stress.py --repeats 30 --seed 0
 source /opt/ros/jazzy/setup.bash                    # 按实际发行版
 python scripts/selftest_ros2.py --duration 15       # ROS2 回环自检（不需要机器人）
 python scripts/run_real.py --duration 60                  # 只读验证话题/姿态
-python scripts/run_real.py --duration 300 --enable-actuation
+python scripts/run_real.py --duration 300 --enable-actuation              # 默认 nominal
+python scripts/run_real.py --duration 300 --enable-actuation --profile full_flip  # 可选附加实验
+# 外部摔倒/人工翻倒后，操作员触发一次官方恢复流程（不主动制造摔倒）
+ros2 service call /doggie/recover std_srvs/srv/Trigger
 ```
 
 ## 安全声明
 
 - **仿真优先**。所有摔倒动作先在 MuJoCo 中验证，再考虑实机。
 - 实机必须在软垫、保护架/吊架、急停手柄可用的情况下进行，且只做**受控倾斜**，不自由摔倒。
+- `run_real.py --profile full_flip` 只调整摔倒后的静置/评估参数；`/doggie/recover` 只触发对**当前已发生姿态**的官方恢复流程，二者都不会主动让机器人翻转。
 - 改变机器人姿态前先切 `JointDamping`，不得带电硬掰关节。
 - 演示前冻结版本并打 tag，避免现场临时改动。

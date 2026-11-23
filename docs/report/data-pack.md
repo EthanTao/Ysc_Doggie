@@ -1,9 +1,9 @@
 # 汇报数据包（仿真）
 
-> 生成时间：2026-11-20T20:28:12  
+> 生成时间：2026-11-23T21:47:52  
 > 数据源：`data/processed/matrix_2026-11-19.csv`、`data/raw/*`  
-> 配置：`config/recovery.yaml`（sha256 前 12 位 `99257fbee6d8`）  
-> 代码：`615d7b0`
+> 配置：`config/recovery.yaml`（sha256 前 12 位 `0f4ace0f9e2d`）  
+> 代码：`41c5520`（工作区有未提交改动）
 
 ## 1. 核心指标
 

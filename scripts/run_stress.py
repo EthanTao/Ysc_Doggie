@@ -23,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from doggie.config import apply_profile  # noqa: E402
 from doggie.io.jitter import FallJitter  # noqa: E402
 from doggie.trial import run_trial  # noqa: E402
 from doggie.utils.logger import load_config  # noqa: E402
@@ -48,6 +49,11 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0, help="基础种子；同一 (fall, repeat) 可复现")
     ap.add_argument("--falls", default=DEFAULT_FALLS, help="逗号分隔：front,side_left,side_right,back,prone")
     ap.add_argument("--scene", default="flat", choices=["flat", "blocked"])
+    ap.add_argument(
+        "--profile",
+        default=None,
+        help="翻倒/恢复 profile（默认 sim.fall_profile；nominal=小幅，full_flip=完整360°）",
+    )
     ap.add_argument("--attitude-deg", type=float, default=2.5, help="初始姿态扰动标准差（度）")
     ap.add_argument("--joint-rad", type=float, default=0.03, help="关节角扰动标准差（rad）")
     ap.add_argument("--rate-rel", type=float, default=0.10, help="初始角速度相对扰动标准差")
@@ -67,6 +73,9 @@ def main() -> None:
         rate_rel=args.rate_rel,
     )
     cfg = load_config(ROOT / "config" / "recovery.yaml")
+    if args.profile is not None and args.profile not in cfg.get("profiles", {}):
+        ap.error(f"未知 profile: {args.profile}")
+    cfg = apply_profile(cfg, args.profile)
 
     rows: list[dict] = []
     for fall_idx, fall in enumerate(falls):
@@ -158,10 +167,11 @@ def main() -> None:
     lines = [
         f"# 随机化压力测试（{args.date}）",
         "",
-        "> 与正式 9 次矩阵分开统计：正式矩阵保持确定性 nominal，本表为带扰动 stress。",
+        "> 与正式 9 次矩阵分开统计：正式矩阵保持零扰动确定性，本表为带扰动 stress。",
         f"> 扰动：姿态 σ={args.attitude_deg}°，关节 σ={args.joint_rad} rad，"
         f"角速度 σ={args.rate_rel:.0%}；每类 {args.repeats} 次，seed 从 {args.seed} 起。",
-        f"> 场景：{args.scene}；结束条件 max_time={args.max_time:.0f} s。",
+        f"> 场景：{args.scene}；profile：{cfg.get('active_profile', '')}；"
+        f"结束条件 max_time={args.max_time:.0f} s。",
         "",
         "## 总览",
         "",
@@ -195,8 +205,8 @@ def main() -> None:
         "",
         "## 结果解读",
         "",
-        "- 成功率低于 100% 不代表正式矩阵失效：正式 9 次仍是零扰动 nominal 结果；",
-        "- 压力测试用于暴露临界工况（例如侧翻落成侧撑后 `LieDown` 无法撤掉支点）；",
+        "- 成功率低于 100% 不代表正式矩阵失效：正式 9 次仍是零扰动确定性结果；",
+        "- 压力测试用于暴露临界工况（例如全翻带扰动后落成侧撑/仰面，官方 LieDown 无法撤掉支点）；",
         "- 若要提升 stress 成功率，应改恢复策略或注入构造，而不是继续加大 `settle_max_s`。",
         "",
     ]

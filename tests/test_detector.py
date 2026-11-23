@@ -17,6 +17,8 @@ CFG = {
     "pitch_threshold_deg": 50.0,
     "fast_path_deg": 75.0,
     "fast_path_dwell_s": 0.15,
+    "rate_fast_path_rad_s": 5.0,
+    "rate_fast_dwell_s": 0.05,
     "dwell_s": 0.30,
     "height_min_m": 0.10,
     "height_dwell_s": 0.30,
@@ -27,13 +29,15 @@ CFG = {
 DT = 1.0 / CFG["rate_hz"]
 
 
-def make_obs(t: float, roll_deg=0.0, pitch_deg=0.0, height=0.33) -> Observation:
+def make_obs(
+    t: float, roll_deg=0.0, pitch_deg=0.0, height=0.33, omega=(0.0, 0.0, 0.0)
+) -> Observation:
     return Observation(
         t=t,
         roll=math.radians(roll_deg),
         pitch=math.radians(pitch_deg),
         yaw=0.0,
-        omega=np.zeros(3),
+        omega=np.asarray(omega, dtype=float),
         joint_pos=np.zeros(12),
         joint_vel=np.zeros(12),
         base_height=height,
@@ -107,6 +111,23 @@ def test_back_classification():
     det = FallDetector(CFG)
     run(det, [(2.0, 0, -90, 0.07)])
     assert det.event.kind == "back"
+
+
+def test_high_rate_full_flip_fast_path():
+    """完整 360° 翻转高速段可能只短暂越过 75°；角速度通道应快速确认。"""
+    det = FallDetector(CFG)
+    fired = False
+    for i in range(60):  # 0.3 s
+        t = (i + 1) * DT
+        # 起始已越过 90°，绕 +y 高速前翻
+        if det.update(make_obs(t, roll_deg=180.0, pitch_deg=70.0, height=0.45,
+                               omega=(0.0, 16.0, 0.0))):
+            fired = True
+            break
+    assert fired
+    assert det.event.cue == "rate_fast"
+    assert det.event.kind == "front"
+    assert det.event.t <= 0.1
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 """实时观看仿真：MuJoCo 窗口 + 状态机/检测器实况。
 
 示例：
-    python scripts/watch_sim.py --playlist all --speed 0.5          # 全部 5 类场景，自动切 flat/blocked
+    python scripts/watch_sim.py --playlist all --speed 0.5          # 平地基准 + 路沿绊倒 + 受阻
     python scripts/watch_sim.py --playlist all --speed 0.5 --loop   # 循环播放，关窗退出
     python scripts/watch_sim.py --fall side_left --speed 0.5 --loop
     python scripts/watch_sim.py --playlist side_left@flat,prone@blocked
@@ -30,19 +30,20 @@ from doggie.core.detector import FallDetector  # noqa: E402
 from doggie.core.recovery_fsm import RecoveryFSM  # noqa: E402
 from doggie.core.types import FsmState as S  # noqa: E402
 from doggie.core.types import Mode  # noqa: E402
+from doggie.config import apply_profile  # noqa: E402
 from doggie.io.sim_backend import SimBackend  # noqa: E402
 from doggie.utils.logger import load_config  # noqa: E402
 
-FALLS = ["front", "back", "side_left", "side_right", "prone", "none"]
-SCENES = ["flat", "blocked"]
+FALLS = ["front", "back", "side_left", "side_right", "prone", "trip", "none"]
+SCENES = ["flat", "blocked", "trip"]
 
-# `--playlist all` 的默认序列：与正式测试矩阵的 5 类场景一一对应，
-# 受阻场景自动切到 blocked（障碍架场景）。
+# `--playlist all` 的默认序列包含平地姿态基准、动态路沿绊倒和受阻案例。
 DEMO_SEQUENCE = [
     ("side_left", "flat"),
     ("side_right", "flat"),
     ("front", "flat"),
     ("back", "flat"),
+    ("trip", "trip"),
     ("prone", "blocked"),
 ]
 
@@ -58,7 +59,10 @@ def parse_playlist(args) -> list[tuple[str, str]]:
     items: list[tuple[str, str]] = []
     for token in raw:
         fall, _, scene = token.partition("@")
-        fall, scene = fall.strip(), scene.strip() or args.scene
+        fall = fall.strip()
+        scene = scene.strip()
+        if not scene:
+            scene = "trip" if fall == "trip" and args.scene == "flat" else args.scene
         if fall not in FALLS:
             raise SystemExit(f"unknown fall in playlist: {fall} (choices: {', '.join(FALLS)})")
         if scene not in SCENES:
@@ -97,12 +101,19 @@ def run_once(viewer, backend, detector, fsm, args, fall: str, scene: str, label:
     backend.set_scene(scene)
     if fall in ("none", "stand"):
         backend.place_standing()
+    elif fall == "trip":
+        backend.place_trip()
     else:
         backend.place_fall(fall)
     detector.reset()
     fsm.reset()
     # 观看正常站立时保持 HOLD；翻倒场景才用阻尼，避免机体自己塌下去。
-    fsm.monitor_mode = Mode.HOLD if fall in ("none", "stand") else Mode.DAMPING
+    fsm.monitor_mode = (
+        Mode.HOLD if fall in ("none", "stand")
+        else Mode.RL if fall == "trip"
+        else Mode.DAMPING
+    )
+    fsm.post_fall_monitor_mode = Mode.HOLD if fall == "trip" else None
     # 注意：不要在这里用 fsm.mode（reset 后是 HOLD）覆盖 backend 的初始模式。
     # 静止翻倒注入应保持 DAMPING，否则 5 ms 的站立 PD 会扰动翻倒过程。
     backend.set_mode(fsm.monitor_mode)
@@ -159,6 +170,10 @@ def run_once(viewer, backend, detector, fsm, args, fall: str, scene: str, label:
         order = "—（未检测到摔倒）"
     print(f"顺序: {order}")
     print(f"尝试次数: {summary['attempts']}  最终状态: {summary['final_state']}")
+    print(
+        f"累计翻转: 运行中 {summary.get('base_rotation_deg', '-')}°"
+        f" / 含注入 {summary.get('flip_rotation_deg', '-')}°"
+    )
     if summary["detected"]:
         recovered = "t_recovered" in fsm.m
         print(f"起身成功: {recovered}  起身耗时: {summary.get('standup_duration_s', '-')} s")
@@ -174,23 +189,33 @@ def main() -> None:
         "--playlist",
         default="",
         help="逗号分隔的场景序列，如 side_left,front,back 或 side_left@flat,prone@blocked；"
-        "填 all 播放全部 5 类场景（自动切 flat/blocked）",
+        "填 all 播放全部演示场景（自动切换 flat / blocked / trip）",
     )
     ap.add_argument("--scene", default="flat", choices=SCENES, help="播放项未指定场景时的默认场景")
     ap.add_argument("--speed", type=float, default=0.5, help="0.25=慢放，1.0=实时")
     ap.add_argument("--max-time", type=float, default=45.0)
     ap.add_argument("--hold", type=float, default=6.0, help="每次结束后停留秒数")
     ap.add_argument("--loop", action="store_true", help="循环播放，关闭窗口才退出")
+    ap.add_argument(
+        "--profile",
+        default=None,
+        help="翻倒/恢复 profile（默认 sim.fall_profile；nominal=小幅，full_flip=完整360°）",
+    )
     args = ap.parse_args()
 
     cfg = load_config(ROOT / "config" / "recovery.yaml")
+    if args.profile is not None and args.profile not in cfg.get("profiles", {}):
+        ap.error(f"未知 profile: {args.profile}")
+    cfg = apply_profile(cfg, args.profile)
     detector = FallDetector(cfg["detector"])
     fsm = RecoveryFSM(cfg["fsm"], detector)
 
     playlist = parse_playlist(args)
-    # blocked 模型 = flat + 障碍架，因此只要序列里出现 blocked 就加载它，
-    # 其余场景运行时把障碍架移到地面以下即可（见 SimBackend.set_scene）。
-    initial_scene = "blocked" if any(s == "blocked" for _, s in playlist) else "flat"
+    # 扩展模型可切换障碍架与路沿，因此 playlist 出现任一挑战场景时加载它，
+    # 运行时通过平移未启用的障碍物切换场景。
+    initial_scene = (
+        "blocked" if any(s in ("blocked", "trip") for _, s in playlist) else "flat"
+    )
     backend = SimBackend(cfg["sim"], scene=initial_scene)
 
     desc = " -> ".join(f"{f}@{s}" for f, s in playlist)
@@ -200,7 +225,10 @@ def main() -> None:
         viewer.cam.azimuth = 45
         viewer.cam.elevation = -18
         viewer.cam.lookat[:] = [0.03, 0.0, 0.25]
-        print(f"窗口已打开：{desc}，speed={args.speed}，loop={args.loop}")
+        print(
+            f"窗口已打开：{desc}，profile={cfg.get('active_profile')}，"
+            f"speed={args.speed}，loop={args.loop}"
+        )
         print("鼠标旋转/滚轮缩放；关闭窗口退出。")
         sys.stdout.flush()
 

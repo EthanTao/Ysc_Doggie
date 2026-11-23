@@ -26,32 +26,30 @@ from .jitter import FallJitter, perturb_attitude, perturb_joints, perturb_rates
 ROOT = Path(__file__).resolve().parents[3]
 MODELS = ROOT / "sim" / "models" / "lite3"
 
-# 翻倒姿态注入：关节角统一使用配置里的 sim.stand.pre_pose_rad（默认 Q_PRE）。
+# 翻倒姿态注入参数由 config/recovery.yaml 的 profiles.*.injections 提供：
+# - nominal：前/后/侧 65–90° 常规翻倒；
+# - full_flip：带角速度与离地高度的完整 360° 翻转。
+# 关节角统一使用配置里的 sim.stand.pre_pose_rad（默认 Q_PRE）。
 # 见 docs/08-feasibility.md。
-FALL_INJECTS = {
-    "front":      dict(axis=(0.0, 1.0, 0.0), deg=90.0),
-    # 后翻 = 后仰 -90° + 前向回摆 4.0 rad/s：机体越过仰面后落到趴地姿态，
-    # 平台 StandUp 可恢复。真正的四脚朝天（无回摆）起不来，作为边界分析单独展示。
-    "back":       dict(axis=(0.0, 1.0, 0.0), deg=-90.0, pitch_rate=4.0),
-    # 侧翻 = 侧倾 ±65° + 官方 Q_PRE 蜷腿角：落地后自然翻回趴地，四腿对称贴地起身。
-    "side_left":  dict(axis=(1.0, 0.0, 0.0), deg=65.0),
-    "side_right": dict(axis=(1.0, 0.0, 0.0), deg=-65.0),
-    # 趴地姿态（受阻场景用：跌入矮障碍物下方，靠高度判据检出）
-    "prone":      dict(axis=(1.0, 0.0, 0.0), deg=0.0),
-}
 
-# blocked 场景在 flat 之上只多一个静态障碍架（body "shelf"）。
-# 被动窗口只能绑定一个 MjModel，因此运行时通过平移该 body 来切换场景：
-# 移到地面以下即同时隐藏外观、移除碰撞，无需重开窗口。
+# 扩展模型包含障碍架和绊脚路沿；被动窗口只能绑定一个 MjModel，
+# 因此运行时通过平移未启用的 body 来切换场景，外观与碰撞会同时隐藏。
 SHELF_BODY = "shelf"
 SHELF_HIDDEN_DZ = -5.0
+TRIP_HURDLE_BODY = "trip_hurdle"
+TRIP_HURDLE_HIDDEN_DZ = -5.0
 
 
 class SimBackend(RobotBackend):
     """MuJoCo 仿真后端：复现官方状态语义与站立轨迹结构。"""
 
     def __init__(self, sim_cfg: dict, scene: str = "flat") -> None:
-        xml = MODELS / ("Lite3.xml" if scene == "flat" else f"Lite3_{scene}.xml")
+        if scene not in ("flat", "blocked", "trip"):
+            raise ValueError(f"unknown scene: {scene}")
+        # blocked.xml 同时包含可切换的障碍架与绊脚路沿，
+        # 避免 playlist 运行时重载模型。
+        xml_name = "Lite3.xml" if scene == "flat" else "Lite3_blocked.xml"
+        xml = MODELS / xml_name
         if not xml.is_file():
             raise FileNotFoundError(
                 f"scene not found: {xml} (run: python scripts/build_scene.py)"
@@ -59,6 +57,15 @@ class SimBackend(RobotBackend):
         self.model = mujoco.MjModel.from_xml_path(str(xml))
         self.model.opt.timestep = float(sim_cfg.get("timestep_s", 0.001))
         self.data = mujoco.MjData(self.model)
+
+        self.fall_profile = str(sim_cfg.get("fall_profile", "nominal"))
+        injections = sim_cfg.get("fall_injection")
+        if not isinstance(injections, dict) or not injections:
+            raise ValueError(
+                "sim.fall_injection 缺失：请用 doggie.config.load_config()/resolve_config() "
+                "解析 profiles，而不是直接传原始 YAML sim 段"
+            )
+        self.fall_injection = injections
 
         # 场景切换用的障碍架（flat 模型没有该 body，id 为 -1）
         self.scene = scene
@@ -70,6 +77,15 @@ class SimBackend(RobotBackend):
             if self._shelf_body >= 0
             else 0.0
         )
+        self._hurdle_body = int(
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, TRIP_HURDLE_BODY)
+        )
+        self._hurdle_pos0 = (
+            self.model.body_pos[self._hurdle_body].copy()
+            if self._hurdle_body >= 0
+            else np.zeros(3)
+        )
+        self.set_scene(scene)
 
         self._qadr = np.array([self.model.joint(n).qposadr[0] for n in JOINT_NAMES])
         self._vadr = np.array([self.model.joint(n).dofadr[0] for n in JOINT_NAMES])
@@ -110,6 +126,14 @@ class SimBackend(RobotBackend):
                 float(trot.get("wz_max_rad_s", 0.8)),
             ]
         )
+        self.trip_vx = float(sim_cfg.get("challenge", {}).get("trip_vx", 0.75))
+        guard = sim_cfg.get("rl_guard", {})
+        self.rl_guard_enabled = bool(guard.get("enabled", True))
+        self.rl_guard_alpha = float(guard.get("smooth_alpha", 0.35))
+        self.rl_guard_clip = float(guard.get("vel_clip_rad_s", 10.0))
+        self.rl_guard_kd = float(guard.get("kd", 2.0))
+        self.rl_guard_hold = float(guard.get("hold_s", 0.40))
+        self._impact_until = 0.0
         self.policy = None
         self.rl_target = self.q_stand.copy()
         self.cmd_vel = np.zeros(3)
@@ -121,6 +145,9 @@ class SimBackend(RobotBackend):
         self.mode = Mode.HOLD
         self._su_t0 = None
         self._ld_t0 = None
+        self._impact_until = 0.0
+        # 注入姿态相对直立的初始翻转角；用于报告“是否真正翻过去”。
+        self.injected_rotation_deg = 0.0
 
     def place_standing(self) -> None:
         self.reset()
@@ -142,49 +169,89 @@ class SimBackend(RobotBackend):
                 bid = int(self.model.body_parentid[bid])
         return out
 
-    def set_scene(self, scene: str) -> None:
-        """在当前 model 上切换 flat / blocked。
+    def _touching_hurdle(self) -> bool:
+        """当前物理步机器人是否与绊脚路沿有接触。"""
+        if self._hurdle_body < 0:
+            return False
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            if (
+                self.model.geom_bodyid[c.geom1] == self._hurdle_body
+                or self.model.geom_bodyid[c.geom2] == self._hurdle_body
+            ):
+                return True
+        return False
 
-        仅支持 blocked 模型：blocked 场景等于 flat 加一个静态障碍架，
-        把障碍 body 平移到地面以下即等于 flat（外观与碰撞同时失效）。
+    def set_scene(self, scene: str) -> None:
+        """在当前 model 上切换 flat / blocked / trip。
+
+        blocked 与 trip 场景共享扩展模型：分别启用障碍架或绊脚路沿。
+        将未使用的 body 平移到地面以下即可同时关闭外观与碰撞。
         """
-        if scene not in ("flat", "blocked"):
+        if scene not in ("flat", "blocked", "trip"):
             raise ValueError(f"unknown scene: {scene}")
         if self._shelf_body < 0 and scene == "blocked":
             raise RuntimeError(
                 "blocked scene is unavailable in this model: "
                 "rebuild with python scripts/build_scene.py"
             )
+        if self._hurdle_body < 0 and scene == "trip":
+            raise RuntimeError(
+                "trip scene is unavailable in this model: "
+                "rebuild with python scripts/build_scene.py"
+            )
         if self._shelf_body >= 0:
             dz = 0.0 if scene == "blocked" else SHELF_HIDDEN_DZ
             self.model.body_pos[self._shelf_body][2] = self._shelf_z0 + dz
+        if self._hurdle_body >= 0:
+            self.model.body_pos[self._hurdle_body] = self._hurdle_pos0
+            if scene != "trip":
+                self.model.body_pos[self._hurdle_body][2] += TRIP_HURDLE_HIDDEN_DZ
+        if self._shelf_body >= 0 or self._hurdle_body >= 0:
             mujoco.mj_forward(self.model, self.data)
         self.scene = scene
+
+    def place_trip(self) -> None:
+        """从正常站姿开始小跑，迎面撞上路沿并由接触动力学触发摔倒。"""
+        if self._hurdle_body < 0:
+            raise RuntimeError(
+                "trip scene is unavailable in this model: "
+                "construct SimBackend(scene='trip') and rebuild the scene if needed"
+            )
+        self.set_scene("trip")
+        self.place_standing()
+        self.start_rl()
+        self.set_velocity(self.trip_vx, 0.0, 0.0)
 
     def place_fall(
         self,
         kind: str,
-        clearance: float = 0.005,
+        clearance: float | None = None,
         *,
         jitter: FallJitter | None = None,
         rng: np.random.Generator | None = None,
     ) -> None:
-        """按翻倒类型放置：最低接触点上方 clearance，零速度。
+        """按当前 profile 的注入参数放置：最低接触点上方留间隙。
 
-        `jitter` 为 None 时保持正式矩阵的确定性；传入 `FallJitter` 时只在
-        姿态/关节角/角速度上叠加小扰动，仍按精确 geom 距离重新留间隙。
+        `clearance` 为空时使用 profile 的 `clearance_m`（全翻需要离地高度，
+        常规翻倒通常为 5 mm）。`jitter` 为 None 时保持正式矩阵的确定性；
+        传入 `FallJitter` 时只在姿态/关节角/角速度上叠加小扰动，仍按精确
+        geom 距离重新留间隙。
         """
-        if kind not in FALL_INJECTS:
-            raise ValueError(f"unknown fall kind: {kind}")
+        if kind not in self.fall_injection:
+            raise ValueError(f"unknown fall kind: {kind} (profile={self.fall_profile})")
         if jitter is not None and not jitter.enabled:
             jitter = None
         if jitter is not None and rng is None:
             raise ValueError("place_fall(jitter=...) requires an explicit numpy Generator")
 
-        inj = FALL_INJECTS[kind]
+        inj = self.fall_injection[kind]
+        if clearance is None:
+            clearance = float(inj.get("clearance_m", 0.005))
         self.reset()
-        a = math.radians(inj["deg"]) / 2.0
+        a = math.radians(float(inj["deg"])) / 2.0
         axis = np.asarray(inj["axis"], dtype=float)
+        axis = axis / np.linalg.norm(axis)
         quat = np.concatenate([[math.cos(a)], math.sin(a) * axis])
         joints = self.q_pre.copy()
         if jitter is not None:
@@ -196,7 +263,7 @@ class SimBackend(RobotBackend):
                 joints + 0.2,
             )
 
-        self.data.qpos[2] = 0.5
+        self.data.qpos[2] = 1.0
         self.data.qpos[3:7] = quat
         self.data.qpos[7:] = joints
         mujoco.mj_forward(self.model, self.data)
@@ -207,11 +274,11 @@ class SimBackend(RobotBackend):
         )
         self.data.qpos[2] += clearance - min_dist
         mujoco.mj_forward(self.model, self.data)
-        if inj.get("pitch_rate"):
-            # 叠加前向翻转动量（行走中侧向失稳）
-            self.data.qvel[3:6] = [0.0, float(inj["pitch_rate"]), 0.0]
+        # 角速度只在注入瞬间叠加，之后完全由重力/接触/阻尼演化。
+        self.data.qvel[3:6] = np.asarray(inj.get("rate", [0.0, 0.0, 0.0]), dtype=float)
         if jitter is not None:
             self.data.qvel[3:6] = perturb_rates(rng, self.data.qvel[3:6], jitter.rate_rel)
+        self.injected_rotation_deg = abs(float(inj["deg"]))
         # 静态翻倒注入：本体处于失控/阻尼状态，不能 PD 硬撑站立姿态
         self.mode = Mode.DAMPING
 
@@ -306,18 +373,37 @@ class SimBackend(RobotBackend):
 
             if self.policy is None:
                 self.enable_policy()
+            if self._touching_hurdle():
+                self._impact_until = max(
+                    self._impact_until, float(self.data.time) + self.rl_guard_hold
+                )
+            guard = self.rl_guard_enabled and float(self.data.time) < self._impact_until
             if self._rl_count % self.policy_decimation == 0:
-                self.rl_target = self.policy.act(
+                omega_obs = self.data.qvel[3:6]
+                joint_vel_obs = self.data.qvel[self._vadr]
+                if guard:
+                    clip = self.rl_guard_clip
+                    omega_obs = np.clip(omega_obs, -clip, clip)
+                    joint_vel_obs = np.clip(joint_vel_obs, -clip, clip)
+                raw_target = self.policy.act(
                     self.data.qpos[3:7],
-                    self.data.qvel[3:6],
+                    omega_obs,
                     self.data.qpos[self._qadr],
-                    self.data.qvel[self._vadr],
+                    joint_vel_obs,
                     self.cmd_vel,
                 )
+                if guard:
+                    alpha = self.rl_guard_alpha
+                    self.rl_target = (
+                        (1.0 - alpha) * self.rl_target + alpha * raw_target
+                    )
+                else:
+                    self.rl_target = raw_target
             self._rl_count += 1
             q = self.data.qpos[self._qadr]
             dq = self.data.qvel[self._vadr]
-            tau = RL_KP * (self.rl_target - q) - RL_KD * dq
+            kd = self.rl_guard_kd if guard else RL_KD
+            tau = RL_KP * (self.rl_target - q) - kd * dq
             self.data.ctrl[:] = np.clip(tau, self._ctrl_lo, self._ctrl_hi)
 
     # ------------------------------------------------------------------ run

@@ -14,7 +14,11 @@
     # 3) 受控倾斜/恢复（必须先在 config/recovery.yaml 配好 state_cmd_topic）
     python scripts/run_real.py --duration 300 --enable-actuation
 
+    # 4) 可选 360° 全翻 profile（只改变摔倒后的等待/评估参数，不会主动翻转）
+    python scripts/run_real.py --duration 300 --profile full_flip --enable-actuation
+
 按 docs/09-real-machine.md 的四阶段 SOP 执行，现场保持急停可用。
+外部摔倒后可用 `ros2 service call /doggie/recover std_srvs/srv/Trigger` 人工触发恢复。
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from doggie.core.detector import FallDetector  # noqa: E402
 from doggie.core.recovery_fsm import RecoveryFSM  # noqa: E402
-from doggie.config import resolve_config  # noqa: E402
+from doggie.config import apply_profile, resolve_config  # noqa: E402
 from doggie.core.safety import SafetyMonitor  # noqa: E402
 from doggie.core.types import Mode  # noqa: E402
 from doggie.io.ros2_backend import Ros2Backend  # noqa: E402
@@ -76,12 +80,22 @@ def main() -> None:
         default=None,
         help="检测频率覆盖（默认用 config 的 detector.rate_hz；会同步低通滤波系数）",
     )
+    ap.add_argument(
+        "--profile",
+        default="nominal",
+        help="恢复 profile（默认 nominal；可选 full_flip 附加实验）。只影响摔倒后的等待/评估参数，不会主动制造摔倒",
+    )
     args = ap.parse_args()
 
     cfg = load_config(Path(args.config))
+    if args.profile not in cfg.get("profiles", {}):
+        raise SystemExit(
+            f"未知 profile: {args.profile}（可选：{', '.join(sorted(cfg.get('profiles', {})))}）"
+        )
+    cfg = apply_profile(cfg, args.profile)
     if args.det_hz is not None:
         cfg["detector"]["rate_hz"] = args.det_hz
-        cfg = resolve_config(cfg)
+        cfg = resolve_config(cfg, profile=args.profile)
     det_hz = float(cfg["detector"]["rate_hz"])
     log_hz = float(cfg["logging"]["rate_hz"])
     dry_run = not args.enable_actuation
@@ -121,7 +135,19 @@ def main() -> None:
             safety.reset()
             print(f"[reset] manual_reset -> {ok}", flush=True)
 
+        def on_recover(t: float) -> bool:
+            ok = fsm.trigger_recovery(t, kind="manual")
+            if ok:
+                backend.set_mode(Mode.DAMPING)
+            print(f"[recover] trigger_recovery -> {ok}", flush=True)
+            return ok
+
+        def publish_status(payload: dict) -> None:
+            payload["profile"] = args.profile
+            backend.publish_status(payload)
+
         backend.on_reset = on_reset
+        backend.on_recover = on_recover
         logger = TrialLogger(run_dir)
         sup = Supervisor(
             backend,
@@ -129,7 +155,7 @@ def main() -> None:
             fsm,
             logger=logger,
             safety=safety,
-            status_cb=backend.publish_status,
+            status_cb=publish_status,
             status_hz=20.0,
         )
 
@@ -140,7 +166,18 @@ def main() -> None:
                 print("已取消。")
                 return
 
-        print(f"开始运行 {args.duration:.0f} s（Ctrl+C 退出，退出前会切回阻尼）")
+        print(f"开始运行 {args.duration:.0f} s（profile={args.profile}，Ctrl+C 退出，退出前会切回阻尼）")
+        recover_service = backend.cfg.get("recover_service")
+        if recover_service:
+            print(
+                f"  操作员恢复接口：ros2 service call {recover_service} "
+                "std_srvs/srv/Trigger"
+            )
+        if args.profile == "full_flip":
+            print(
+                "  [safety] full_flip profile 只改变摔倒后的静置/评估参数；"
+                "本脚本不会主动让机器人翻转。"
+            )
         try:
             result = sup.run(
                 args.duration,
@@ -162,6 +199,7 @@ def main() -> None:
                 "date": datetime.now().isoformat(timespec="seconds"),
                 "backend": "ros2",
                 "dry_run": dry_run,
+                "fall_profile": args.profile,
                 "config_hash_note": "see config/recovery.yaml",
                 "result": result,
             }

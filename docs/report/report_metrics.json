@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-11-20T20:28:12",
+  "generated_at": "2026-11-23T21:47:52",
   "matrix_csv": "data/processed/matrix_2026-11-19.csv",
-  "config_sha256_12": "99257fbee6d8",
-  "git_commit": "615d7b0",
-  "git_dirty": false,
+  "config_sha256_12": "0f4ace0f9e2d",
+  "git_commit": "41c5520",
+  "git_dirty": true,
   "formal": {
     "n": 9,
     "detected": 9,

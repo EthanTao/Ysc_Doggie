@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from doggie.config import ConfigError, load_config, resolve_config
+from doggie.config import ConfigError, apply_profile, load_config, resolve_config
 from doggie.core.params import hipy_by_height, q_stand
 from doggie.io.sim_backend import SimBackend
 from doggie.supervisor import Supervisor
@@ -45,6 +45,40 @@ def test_pre_height_from_config_is_effective():
     assert backend.pre_height == pytest.approx(0.20)
 
 
+def test_nominal_is_default_profile():
+    """主路径恢复为原来的 65–90° 摔倒；full_flip 只作为附加实验。"""
+    assert CFG["active_profile"] == "nominal"
+    assert CFG["fsm"]["settle_max_s"] == pytest.approx(3.0)
+    inj = CFG["sim"]["fall_injection"]
+    assert inj["front"]["deg"] == pytest.approx(90.0)
+    assert abs(inj["side_left"]["deg"]) == pytest.approx(65.0)
+    assert np.allclose(inj["front"]["rate"], 0.0)
+    assert inj["prone"]["clearance_m"] == pytest.approx(0.005)
+
+
+def test_full_flip_profile_remains_available_as_optional_experiment():
+    full = apply_profile(CFG, "full_flip")
+    assert full["active_profile"] == "full_flip"
+    assert full["fsm"]["settle_max_s"] == pytest.approx(5.0)
+    for kind in ("front", "back", "side_left", "side_right"):
+        assert full["sim"]["fall_injection"][kind]["clearance_m"] > 0.0
+        assert np.linalg.norm(full["sim"]["fall_injection"][kind]["rate"]) > 0.0
+    # 不修改原配置
+    assert CFG["active_profile"] == "nominal"
+
+
+def test_unknown_profile_rejected():
+    with pytest.raises(ConfigError, match="未知 profile"):
+        apply_profile(CFG, "does_not_exist")
+
+
+def test_missing_injection_rejected():
+    cfg = copy.deepcopy(CFG)
+    del cfg["profiles"]["full_flip"]["injections"]["back"]
+    with pytest.raises(ConfigError, match="缺少"):
+        resolve_config(cfg)
+
+
 def test_mismatched_standup_duration_rejected():
     cfg = copy.deepcopy(CFG)
     cfg["fsm"]["standup_traj_s"] = 4.0
@@ -70,6 +104,13 @@ def test_non_integer_rate_rejected():
     cfg = copy.deepcopy(CFG)
     cfg["detector"]["rate_hz"] = 300  # 1 ms 步长下每帧 3.333 步
     with pytest.raises(ConfigError, match="rate_hz"):
+        resolve_config(cfg)
+
+
+def test_invalid_rl_guard_rejected():
+    cfg = copy.deepcopy(CFG)
+    cfg["sim"]["rl_guard"]["smooth_alpha"] = 0.0
+    with pytest.raises(ConfigError, match="smooth_alpha"):
         resolve_config(cfg)
 
 

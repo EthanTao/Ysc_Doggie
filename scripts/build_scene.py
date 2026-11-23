@@ -3,7 +3,8 @@
 
 机器人本体使用 DeepRoboticsLab/deep_robotics_model 的官方 MJCF（原样保存在
 `sim/models/lite3/mjcf/Lite3.xml`，不改写几何/质量/惯量/关节/执行器/传感器定义）。
-本脚本仅在官方 MJCF 之上叠加展示用材质、三点布光、舞台地面、天空盒与受阻场景架子，
+本脚本仅在官方 MJCF 之上叠加展示用材质、三点布光、舞台地面、天空盒、
+受阻场景架子与绊脚路沿，
 并将碰撞体移到 group=3（只参与物理，渲染时隐藏，避免与 STL 外观重叠闪烁）。
 
 生成结果：
@@ -202,7 +203,7 @@ def decorate_scene(spec: mujoco.MjSpec, scene: str) -> None:
     light("front_fill", [3.0, -1.0, 1.2], [-1.0, 0.30, -0.20],
           [0.55, 0.52, 0.48], [0.2, 0.2, 0.2], False, 0.55)
 
-    if scene == "blocked":
+    if scene in ("blocked", "trip"):
         # 矮障碍：碰撞体仍是 0.32 x 0.32 x 0.24 的盒体，下方净空 0.15 m；
         # 外观做成可见的低矮设备架，方便展示机器人被卡住。
         shelf_body = spec.worldbody.add_body()
@@ -234,6 +235,40 @@ def decorate_scene(spec: mujoco.MjSpec, scene: str) -> None:
         for i, (x, y) in enumerate(((0.17, 0.17), (0.17, -0.17), (-0.17, 0.17), (-0.17, -0.17))):
             rack_box(f"shelf_post{i}", [0.008, 0.008, 0.12], [x, y, 0.27], "shelf")
         rack_box("shelf_stripe", [0.16, 0.004, 0.006], [0.0, -0.161, 0.145], "hazard")
+
+    if scene in ("blocked", "trip"):
+        # 场景触发型摔倒：小跑中的机器狗迎面撞上 11 cm 高的路沿/门槛，
+        # 由真实几何接触扰乱步态，而非直接把模型摆成翻倒姿态。
+        hurdle_body = spec.worldbody.add_body()
+        hurdle_body.name = "trip_hurdle"
+        hurdle_body.pos = [0.75, 0.0, 0.055]
+
+        collision = hurdle_body.add_geom()
+        collision.name = "trip_hurdle_collision"
+        collision.type = mujoco.mjtGeom.mjGEOM_BOX
+        collision.size = [0.035, 0.60, 0.055]
+        collision.friction = [1.0, 0.01, 0.01]
+        collision.group = 3
+        collision.castshadow = False
+
+        visual = hurdle_body.add_geom()
+        visual.name = "trip_hurdle_visual"
+        visual.type = mujoco.mjtGeom.mjGEOM_BOX
+        visual.size = [0.035, 0.60, 0.055]
+        visual.material = "hazard"
+        visual.group = 2
+        visual.contype = 0
+        visual.conaffinity = 0
+
+        stripe = hurdle_body.add_geom()
+        stripe.name = "trip_hurdle_stripe"
+        stripe.type = mujoco.mjtGeom.mjGEOM_BOX
+        stripe.size = [0.002, 0.60, 0.012]
+        stripe.pos = [-0.037, 0.0, 0.025]
+        stripe.material = "stage"
+        stripe.group = 2
+        stripe.contype = 0
+        stripe.conaffinity = 0
 
     # 画面设置：柔和雾气、远景、阴影分辨率。
     spec.visual.global_.offwidth = 1920

@@ -1,7 +1,8 @@
 # 实机验收指南（Lite3 / ROS2）
 
-> 对应报告 6.1–6.3。仿真结论（9/9 检出、9/9 先安全后起身、9/9 起身、3/3 受阻锁存）
-> 已在 MuJoCo 中复现；本文只讲**搬到真机上还差什么、怎么验、哪些指标会变**。
+> 对应报告 6.1–6.3。主路径仿真结论（常规前/后/侧翻 9/9 检出、9/9 先安全后起身、
+> 9/9 起身、3/3 受阻锁存）已在 MuJoCo 中复现；本文只讲**搬到真机上还差什么、怎么验、
+> 哪些指标会变**。完整 360° `full_flip` 是可选附加实验，不是实机默认路径。
 
 ## 1. 当前实现状态
 
@@ -14,6 +15,8 @@
 | 腿部正运动学 | `src/doggie/core/kinematics.py` | 杆长引用 `core.params`，与官方 MJCF 对拍误差 < 1 mm |
 | 安全看门狗 | `src/doggie/core/safety.py` | 心跳超时 + 阻尼确认，接入 `Supervisor` |
 | 实机启动脚本 | `scripts/run_real.py` | 默认**只读干跑**，`--enable-actuation` 才下发指令 |
+| 恢复 profile | `run_real.py --profile` | `nominal`（默认，静置窗口 3 s）/ `full_flip`（可选附加实验，5 s）；只影响摔倒后参数 |
+| 人工恢复接口 | `/doggie/recover` (`std_srvs/srv/Trigger`) | 对**当前已发生姿态**触发一次官方恢复，不主动制造摔倒 |
 | ROS2 链路自检 | `scripts/selftest_ros2.py` | 单进程真实 rclpy/DDS 回环，上机前 1 分钟跑通 |
 
 `Supervisor` 已不再引用 `MjModel`：仿真按步计数调度，实机按时间戳调度，
@@ -48,6 +51,10 @@
 否则 `damping_ack_timeout_s` 看门狗无法生效（代码会显式跳过，不会误报）。回读消息
 默认按 `std_msgs/msg/String` 的 `data` 字段与 `state_names` 比较；若官方用自定义
 State 消息，请同时确认字段解析逻辑。
+
+人工恢复服务（`ros2.recover_service`，默认 `/doggie/recover`）用于机器人在外部作用下
+已经摔倒、但检测器未触发或操作员希望立即恢复的场景。调用后状态机仍**先进入 S1
+纯阻尼**、等静止后再 S2 评估，不会跳过安全流程；服务本身不会让机器人翻转。
 
 ## 3. 高度估计：实机没有高度真值时怎么办
 
@@ -85,13 +92,37 @@ $$
 现场必须：≥5 cm 软垫、龙门吊架（站立松弛 / 趴地留 10 cm 余量）、三人分工、
 硬件急停可用、`config/recovery.yaml` 里 `allow_real_fall_test: false` 保持不变。
 
+### 4.1 可选 360° 全翻 profile（不主动制造摔倒）
+
+默认实机路径是 `nominal`（常规 65–90° 摔倒/受控倾斜）。`full_flip` 只作为附加实验：
+仿真中由初始角速度/离地高度构造，真机不能由代码复制这一点，也不应主动把机器人抛翻。
+实机的用法是：**外部原因已经造成完整翻转后**，用同一套检测与恢复逻辑处理：
+
+```bash
+# 干跑观察：只读，不下发动作；适合先确认姿态/高度估计
+python scripts/run_real.py --duration 120 --profile full_flip
+
+# 受控恢复：必须已配 state_cmd_topic；会二次确认
+python scripts/run_real.py --duration 300 --profile full_flip --enable-actuation
+
+# 若检测器没触发（例如机器人被人工搬到趴地），操作员手动触发恢复
+ros2 service call /doggie/recover std_srvs/srv/Trigger
+```
+
+- `full_flip` 把 `fsm.settle_max_s` 从 3 s 放宽到 5 s，给落地弹跳/滚动更多时间；
+- 检测器有高速翻转通道（姿态越限 + |ω| ≥ 5 rad/s 持续 0.05 s），仿真中全翻在
+  0.05 s 内确认；实机需用 `/IMU_DATA` 实测角速度复核该阈值；
+- 目标仍是**翻转后落回趴地**。若最终静止在仰面，`S2_ASSESS` 会锁存
+  `E_UNRECOVERABLE_POSE`，不要用“仰面静置后要求自恢复”作为验收条件；
+- 操作员必须使用软垫/吊架并保持急停可用；`/doggie/recover` 不会替代这些保护。
+
 ## 5. 指标口径：验收时看 `detect_delay_s`
 
 - `latency_s`（仿真矩阵用的）是「从本次运行开始到确认」的时间，跑得越久越大，
   实机常驻运行时没有意义。
 - `detect_delay_s`（本次新增）是「首个判据越限 → 确认」的耗时，才是与
-  「时延 ≤ 2 s」对应的量。仿真里二者分别为 0.305 / 0.300（侧翻）、0.155 / 0.150（前翻）、
-  0.320 / 0.300（受阻）。
+  「时延 ≤ 2 s」对应的量。主路径 nominal 仿真中侧翻/前翻/受阻约为
+  **0.305 / 0.155 / 0.320 s**；可选 full_flip 由高速翻转通道在 0.05 s 确认。
 
 采样率变化会同时影响低通滤波与驻留判据的采样点密度：若 `/IMU_DATA` 是 100 Hz，
 用 `run_real.py --det-hz 100` 覆盖即可；该参数会同步 `detector.rate_hz`（低通系数），
@@ -99,14 +130,16 @@ $$
 
 ## 6. 已知差距与验收风险（务必提前和老师说明）
 
-1. **纯仰面（四脚朝天、无回摆）仍然起不来**。仿真中后翻是靠注入 4 rad/s 前向回摆
-   落到趴地才成功的；真机不会自动产生这个动量。当前策略会识别 `|roll| ≥ 120°`
-   判 `E_UNRECOVERABLE_POSE` 并安全锁存，**这是设计上的主动拒止，不是回归**。
-   验收时不要用「静置仰面后要求自恢复」作为通过条件。
-2. **摔倒过程与注入不同**。仿真是静态摆放到 65°/90° 释放，真机摔倒是带角速度、
-   滑移、姿态任意的过程。判定阈值裕度大（正常包络 1.7° vs 50° 门限），但
-   **侧翻过程中反复穿越阈值是否导致重复触发**必须实测（检测器已锁存 + 回差，
-   预期无重复）。
+1. **纯仰面（背部静止着地）仍然起不来**。主路径 nominal 与可选 `full_flip` 都要求
+   最终落回趴地；真机若最终静止在仰面，`StandUp`/`LieDown+StandUp` 都无法自翻正。
+   当前策略会识别 `|roll| ≥ 120°` 判 `E_UNRECOVERABLE_POSE` 并安全锁存，**这是设计上的
+   主动拒止，不是回归**。验收时不要用「静置仰面后要求自恢复」作为通过条件；该目标的
+   研究交接见 `docs/11-handoff.md`。
+2. **摔倒过程与注入不同**。仿真 nominal 是静态 65–90° 注入，full_flip 是固定初始角速度/
+   离地高度构造；真机摔倒是带滑移、任意轴、能量耗散的过程。判定阈值裕度大
+   （正常包络 1.7° vs 50° 门限），但高速翻转通道的 `|ω| ≥ 5 rad/s` 必须用现场
+   `/IMU_DATA` 复核；检测器已锁存 + 回差 + 事件起点保持，预期不会因翻转中反复穿越
+   阈值而重复触发，但仍需实测。
 3. **足端触地**：无足端力话题时用几何估计（`feet_contact_from_q`），仅用于记录；
    当前判据不依赖 `feet_contact`，不影响判定结果。
 4. **`E_DAMPING_NO_ACK` 依赖状态回读**。没配 `state_feedback_topic` 时该看门狗
@@ -136,11 +169,20 @@ python scripts/selftest_ros2.py --duration 15
 # 只读干跑（默认），验证话题与姿态
 python scripts/run_real.py --duration 60
 
+# 可选全翻 profile（仍只读）
+python scripts/run_real.py --duration 120 --profile full_flip
+
 # 静态零偏
 python scripts/run_real.py --duration 30 --calibrate 2
 
-# 使能运动指令（会二次确认）
+# 使能运动指令（会二次确认；默认 nominal）
 python scripts/run_real.py --duration 300 --enable-actuation
+
+# 可选：360° 全翻附加实验
+python scripts/run_real.py --duration 300 --enable-actuation --profile full_flip
+
+# 外部摔倒后人工触发一次恢复（不制造摔倒）
+ros2 service call /doggie/recover std_srvs/srv/Trigger
 
 # 人工复位
 ros2 service call /doggie/reset std_srvs/srv/Trigger

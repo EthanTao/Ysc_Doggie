@@ -14,6 +14,8 @@ class FallDetector:
         a) 姿态超限持续 dwell_s；
         b) 躯干高度低于 height_min_m 持续 height_dwell_s（趴地/仰翻时姿态角≈0，必须靠高度）；
         c) 快速通道：倾角 > fast_path_deg 持续 fast_path_dwell_s；
+        d) 高速翻转通道：姿态越限 + |omega| >= rate_fast_path_rad_s
+           持续 rate_fast_dwell_s（抓完整 360° 翻转的高速段）；
       触发后事件锁存，直到恢复完成由 FSM 调用 clear()。
     """
 
@@ -24,10 +26,17 @@ class FallDetector:
         self.pitch_thr = math.radians(float(cfg.get("pitch_threshold_deg", 50.0)))
         self.fast_thr = math.radians(float(cfg.get("fast_path_deg", 75.0)))
         self.fast_dwell = float(cfg.get("fast_path_dwell_s", 0.15))
+        self.rate_fast_thr = float(cfg.get("rate_fast_path_rad_s", 5.0))
+        self.rate_fast_dwell = float(cfg.get("rate_fast_dwell_s", 0.05))
         self.dwell = float(cfg.get("dwell_s", 0.30))
         self.use_height = bool(cfg.get("use_height", True))
         self.height_min = float(cfg.get("height_min_m", 0.10))
         self.height_dwell = float(cfg.get("height_dwell_s", 0.30))
+        # 判定“已恢复直立、可重置事件起点”的高度；比趴地门限略高，
+        # 防止全翻落地后 h≈0.10 m 徘徊时过早清掉起始姿态。
+        self.stable_height = float(
+            cfg.get("stable_height_m", self.height_min + 0.02)
+        )
         self.rec_roll = math.radians(float(cfg.get("recover_roll_deg", 35.0)))
         self.rec_pitch = math.radians(float(cfg.get("recover_pitch_deg", 35.0)))
         self.rec_dwell = float(cfg.get("recover_dwell_s", 0.50))
@@ -45,8 +54,10 @@ class FallDetector:
         self._att_since: float | None = None
         self._h_since: float | None = None
         self._fast_since: float | None = None
+        self._rate_fast_since: float | None = None
         self._rec_since: float | None = None
         self._first_bad: float | None = None
+        self._onset_rpy: tuple[float, float, float] | None = None
         self._peak_roll = 0.0
         self._peak_pitch = 0.0
         self.latched = False
@@ -64,8 +75,10 @@ class FallDetector:
         self._att_since = None
         self._h_since = None
         self._fast_since = None
+        self._rate_fast_since = None
         self._rec_since = None
         self._first_bad = None
+        self._onset_rpy = None
 
     @property
     def filtered_roll_deg(self) -> float:
@@ -77,7 +90,19 @@ class FallDetector:
 
     # ------------------------------------------------------------------ logic
     def _classify(self, obs: Observation) -> str:
-        # 用整个过程的历史峰值分类：带前向动量的侧翻在触发时可能同时有 roll/pitch
+        # 优先用“首个判据越限时”的重力方向分类。完整 360° 翻转会让欧拉角
+        # 在 ±90° 附近换轴（pitch 90° 后表现为 roll=180°），用全程峰值会把
+        # 后翻误判成前翻；重力在机体系的投影不会因绕圈而改变语义。
+        if self._onset_rpy is not None:
+            roll, pitch, _ = self._onset_rpy
+            gx = math.sin(pitch)
+            gy = -math.sin(roll) * math.cos(pitch)
+            if abs(gx) >= math.sin(self.type_pitch) and abs(gx) >= abs(gy):
+                return "front" if gx > 0 else "back"
+            if abs(gy) >= math.sin(self.type_roll):
+                return "side_left" if gy < 0 else "side_right"
+
+        # 回退：未知初始姿态时用历史峰值（兼容早期数据/静态注入）。
         r, p = self._peak_roll, self._peak_pitch
         if abs(p) >= self.type_pitch:
             return "front" if p > 0 else "back"
@@ -116,6 +141,9 @@ class FallDetector:
 
         # 回差跟踪：只有连续 recover_dwell_s 满足 |roll|<recover_roll 且 |pitch|<recover_pitch 才算退出迟滞带
         in_rec = abs(self._fr) < self.rec_roll and abs(self._fp) < self.rec_pitch
+        stable = in_rec and (
+            not self.use_height or obs.base_height > self.stable_height
+        )
         if in_rec:
             if self._rec_since is None:
                 self._rec_since = obs.t
@@ -123,6 +151,16 @@ class FallDetector:
                 self.in_hysteresis_band = False
         else:
             self._rec_since = None
+
+        # 只有“姿态回正且高度正常”持续足够久，才认为上一次扰动结束。
+        # 完整 360° 翻转中机身会短暂扫过小角度，但高度仍低，不能清掉
+        # 起始姿态/起始时刻，否则会把全翻误分类成 flat。
+        if stable and obs.t - (self._rec_since or obs.t) >= self.rec_dwell:
+            if not self.latched:
+                self._first_bad = None
+                self._onset_rpy = None
+                self._peak_roll = 0.0
+                self._peak_pitch = 0.0
 
         if self.latched:
             self.in_hysteresis_band = True
@@ -136,8 +174,18 @@ class FallDetector:
         if att_bad or h_bad or tilt > self.fast_thr:
             if self._first_bad is None:
                 self._first_bad = obs.t
+            if self._onset_rpy is None:
+                self._onset_rpy = (obs.roll, obs.pitch, obs.yaw)
+
+        # c0) 高速翻转通道：姿态越限 + 高角速度，短驻留即确认。
+        omega_norm = math.sqrt(sum(float(w) * float(w) for w in obs.omega))
+        if att_bad and omega_norm >= self.rate_fast_thr:
+            if self._rate_fast_since is None:
+                self._rate_fast_since = obs.t
+            if obs.t - self._rate_fast_since >= self.rate_fast_dwell:
+                return self._confirm(obs, "rate_fast")
         else:
-            self._first_bad = None
+            self._rate_fast_since = None
 
         # c) 快速通道
         if tilt > self.fast_thr:

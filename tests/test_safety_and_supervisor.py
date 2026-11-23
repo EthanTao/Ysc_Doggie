@@ -181,6 +181,57 @@ def test_stale_sensor_triggers_safety_fault_and_estop():
     assert fsm.mode == Mode.DAMPING
 
 
+def test_manual_recovery_trigger_runs_official_sequence():
+    """实机 /doggie/recover 的语义：外部已摔倒后人工触发，仍先 S1 再 S2/S3。"""
+    backend = ScriptedBackend(fall_at=0.0)  # 一开始就是趴地姿态
+    det = FallDetector(DET_CFG)
+    fsm = RecoveryFSM(FSM_CFG, det)
+    backend.fsm = fsm
+
+    original_tick = backend.tick
+
+    def tick_with_trigger():
+        original_tick()
+        if not getattr(backend, "_manual_fired", False):
+            backend._manual_fired = True
+            assert fsm.trigger_recovery(backend.now(), kind="manual")
+
+    backend.tick = tick_with_trigger
+    sup = Supervisor(backend, det, fsm)
+    result = sup.run(max_time=20.0)
+
+    assert result["detected"] is True
+    assert result["recovered"] is True
+    assert result["transitions"][0]["reason"] == "manual_recovery"
+    assert result["order_safe_before_standup"] is True
+
+
+def test_ros2_backend_exposes_manual_recover_service():
+    from doggie.io.ros2_backend import DEFAULTS, Ros2Backend
+
+    assert DEFAULTS["recover_service"] == "/doggie/recover"
+
+    class Resp:
+        success = False
+        message = ""
+
+    backend = object.__new__(Ros2Backend)
+    backend.on_recover = None
+    resp = backend._srv_recover(None, Resp())
+    assert resp.success is False
+
+    calls: list[float] = []
+    backend.on_recover = calls.append
+    resp = backend._srv_recover(None, Resp())
+    assert resp.success is True
+    assert calls
+
+    backend.on_recover = lambda _t: False
+    resp = backend._srv_recover(None, Resp())
+    assert resp.success is False
+    assert "rejected" in resp.message
+
+
 def test_damping_ack_timeout_only_when_observable():
     # 不可观测：不应误报
     safety = SafetyMonitor(SAFETY_CFG)

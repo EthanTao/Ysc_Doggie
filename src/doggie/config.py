@@ -1,10 +1,11 @@
 """配置加载与参数一致性解析。
 
-`config/recovery.yaml` 是唯一参数源。本模块在加载时做四件事：
-1. 把单腿 3 维 `pre_pose_rad` 展开为 12 维，并同步到 FSM（避免两处定义漂移）；
-2. 校验 `standup_traj_s` / `liedown_traj_s` 与仿真每阶段时长一致；
-3. 校验采样率与物理步长能整除，避免“配置写 200 Hz、实际按 100 Hz 跑”；
-4. 为 trot 段补齐归一化指令上限的默认值。
+`config/recovery.yaml` 是唯一参数源。本模块在加载时做五件事：
+1. 校验并展开 `profiles`，把选中 profile 的注入参数与 FSM 覆盖项写入 `sim` / `fsm`；
+2. 把单腿 3 维 `pre_pose_rad` 展开为 12 维，并同步到 FSM（避免两处定义漂移）；
+3. 校验 `standup_traj_s` / `liedown_traj_s` 与仿真每阶段时长一致；
+4. 校验采样率与物理步长能整除，避免“配置写 200 Hz、实际按 100 Hz 跑”；
+5. 为 trot 段补齐归一化指令上限的默认值。
 """
 
 from __future__ import annotations
@@ -20,6 +21,94 @@ from .core.params import expand_pre_pose
 
 class ConfigError(ValueError):
     """配置自相矛盾时抛出，避免静默使用错误参数。"""
+
+
+FALL_KINDS = ("front", "back", "side_left", "side_right", "prone")
+DEFAULT_PROFILE = "nominal"
+
+
+def _validate_injection(kind: str, data: dict, profile: str) -> dict:
+    """校验单个翻倒注入并返回规范化副本（轴向量单位化）。"""
+    if not isinstance(data, dict):
+        raise ConfigError(f"profiles.{profile}.injections.{kind} 必须是字典")
+    axis = data.get("axis", (0.0, 1.0, 0.0))
+    try:
+        axis = np.asarray(axis, dtype=float).reshape(3)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            f"profiles.{profile}.injections.{kind}.axis 必须是 3 维向量"
+        ) from exc
+    norm = float(np.linalg.norm(axis))
+    if norm < 1e-9:
+        raise ConfigError(f"profiles.{profile}.injections.{kind}.axis 不能为零向量")
+    axis = axis / norm
+
+    rate = data.get("rate", (0.0, 0.0, 0.0))
+    try:
+        rate = np.asarray(rate, dtype=float).reshape(3)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            f"profiles.{profile}.injections.{kind}.rate 必须是 3 维向量"
+        ) from exc
+
+    deg = float(data.get("deg", 0.0))
+    clearance = float(data.get("clearance_m", 0.005))
+    if clearance < 0.0:
+        raise ConfigError(
+            f"profiles.{profile}.injections.{kind}.clearance_m 必须非负"
+        )
+    return {
+        "axis": axis.tolist(),
+        "deg": deg,
+        "rate": rate.tolist(),
+        "clearance_m": clearance,
+    }
+
+
+def _resolve_profile(cfg: dict, profile: str | None) -> None:
+    """把选中的 profile 注入到 sim/fsm，并校验所有 profile 的结构。"""
+    profiles = cfg.get("profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        raise ConfigError("缺少 profiles：至少需要 nominal / full_flip 之一")
+
+    for name, node in profiles.items():
+        if not isinstance(node, dict):
+            raise ConfigError(f"profiles.{name} 必须是字典")
+        injections = node.get("injections")
+        if not isinstance(injections, dict):
+            raise ConfigError(f"profiles.{name}.injections 必须是字典")
+        missing = [kind for kind in FALL_KINDS if kind not in injections]
+        if missing:
+            raise ConfigError(
+                f"profiles.{name}.injections 缺少：{', '.join(missing)}"
+            )
+        node["injections"] = {
+            kind: _validate_injection(kind, injections[kind], name)
+            for kind in FALL_KINDS
+        }
+        overrides = node.get("fsm") or {}
+        if not isinstance(overrides, dict):
+            raise ConfigError(f"profiles.{name}.fsm 必须是字典")
+        node["fsm"] = overrides
+
+    sim = cfg.setdefault("sim", {})
+    selected = profile or sim.get("fall_profile") or DEFAULT_PROFILE
+    if selected not in profiles:
+        raise ConfigError(
+            f"未知 profile: {selected}（可选：{', '.join(sorted(profiles))}）"
+        )
+
+    # profile 的 fsm 覆盖项优先于基础 fsm；用深拷贝避免污染 profiles。
+    for key, value in profiles[selected]["fsm"].items():
+        cfg.setdefault("fsm", {})[key] = copy.deepcopy(value)
+    sim["fall_profile"] = selected
+    sim["fall_injection"] = copy.deepcopy(profiles[selected]["injections"])
+    cfg["active_profile"] = selected
+
+
+def apply_profile(cfg: dict, profile: str | None = None) -> dict:
+    """返回应用指定 profile 的新配置；不修改调用方 dict。"""
+    return resolve_config(cfg, profile=profile)
 
 
 def _check_rate(section: str, key: str, hz: float, dt: float) -> None:
@@ -43,9 +132,14 @@ def _derive_or_check(node: dict, key: str, expected: float, hint: str) -> None:
         )
 
 
-def resolve_config(cfg: dict) -> dict:
-    """返回参数一致的深拷贝；不修改调用方传入的 dict。"""
+def resolve_config(cfg: dict, profile: str | None = None) -> dict:
+    """返回参数一致的深拷贝；不修改调用方传入的 dict。
+
+    `profile` 为空时使用 `sim.fall_profile`（默认 `nominal`）。
+    profile 同时决定翻倒注入参数（仿真）和 FSM 覆盖项（仿真/实机共用）。
+    """
     cfg = copy.deepcopy(cfg)
+    _resolve_profile(cfg, profile)
     sim = cfg.setdefault("sim", {})
     stand = sim.setdefault("stand", {})
     dt = sim.get("timestep_s")
@@ -92,6 +186,27 @@ def resolve_config(cfg: dict) -> dict:
         trot.setdefault("vx_max_m_s", 0.8)
         trot.setdefault("vy_max_m_s", 0.8)
         trot.setdefault("wz_max_rad_s", 0.8)
+
+    challenge = sim.get("challenge")
+    if challenge is not None:
+        challenge.setdefault("trip_vx", 0.75)
+
+    guard = sim.get("rl_guard")
+    if guard is not None:
+        guard.setdefault("enabled", True)
+        guard.setdefault("smooth_alpha", 0.35)
+        guard.setdefault("vel_clip_rad_s", 10.0)
+        guard.setdefault("kd", 2.0)
+        guard.setdefault("hold_s", 0.40)
+        alpha = float(guard["smooth_alpha"])
+        if not 0.0 < alpha <= 1.0:
+            raise ConfigError("sim.rl_guard.smooth_alpha 必须在 (0, 1] 内")
+        if float(guard["vel_clip_rad_s"]) <= 0.0:
+            raise ConfigError("sim.rl_guard.vel_clip_rad_s 必须大于 0")
+        if float(guard["kd"]) < 0.0:
+            raise ConfigError("sim.rl_guard.kd 必须非负")
+        if float(guard["hold_s"]) < 0.0:
+            raise ConfigError("sim.rl_guard.hold_s 必须非负")
 
     return cfg
 

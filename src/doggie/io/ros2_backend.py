@@ -47,6 +47,8 @@ DEFAULTS: dict[str, Any] = {
     "estop_topic": "",
     "status_topic": "/doggie/status",
     "reset_service": "/doggie/reset",
+    # 操作员触发“对当前姿态执行恢复”的服务；不制造摔倒，只复用官方恢复动作。
+    "recover_service": "/doggie/recover",
     "cmd_resend_s": 0.20,
     "height_source": "fk",  # fk | msg
     "force_threshold_n": 15.0,
@@ -78,10 +80,13 @@ class Ros2Backend(RobotBackend):
         node=None,
         dry_run: bool = True,
         on_reset: Callable[[float], None] | None = None,
+        on_recover: Callable[[float], bool | None] | None = None,
     ) -> None:
         self.cfg = {**DEFAULTS, **(cfg.get("ros2") or {})}
         self.dry_run = bool(dry_run)
         self.on_reset = on_reset
+        self.on_recover = on_recover
+        self.profile = str(cfg.get("active_profile", ""))
         self.mode = Mode.HOLD
         self.notes: list[str] = []
 
@@ -139,6 +144,13 @@ class Ros2Backend(RobotBackend):
 
             self.node.create_service(Trigger, self.cfg["reset_service"], self._srv_reset)
 
+        if self.cfg["recover_service"]:
+            from std_srvs.srv import Trigger
+
+            self.node.create_service(
+                Trigger, self.cfg["recover_service"], self._srv_recover
+            )
+
     # ------------------------------------------------------------------ callbacks
     def _on_imu(self, msg) -> None:
         self._imu_msg = msg
@@ -162,6 +174,21 @@ class Ros2Backend(RobotBackend):
         self.on_reset(time.monotonic())
         response.success = True
         response.message = "manual reset requested"
+        return response
+
+    def _srv_recover(self, _request, response):
+        if self.on_recover is None:
+            response.success = False
+            response.message = "no recovery handler bound"
+            return response
+        accepted = self.on_recover(time.monotonic())
+        # 兼容只做通知的旧回调：返回 None 视为已受理。
+        response.success = True if accepted is None else bool(accepted)
+        response.message = (
+            "manual recovery requested"
+            if response.success
+            else "recovery rejected: FSM not idle or fall already latched"
+        )
         return response
 
     # ------------------------------------------------------------------ timing

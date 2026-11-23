@@ -3,7 +3,9 @@
 > **适用场景**：《四足机器人 Lite3 实践任务书（修订版）》任务二（恢复运控）结题验收与现场答辩  
 > **建议答辩时长**：8–10 分钟演讲 + 5 分钟评委问答（共 14 页核心幻灯片）  
 > **配套报告**：`docs/06-report.md`  
-> **配置与代码基线**：`config/recovery.yaml`（`99257fbee6d8`） / Git Commit `615d7b0`
+> **配置与代码基线**：`config/recovery.yaml`（`0f4ace0f9e2d`） / Git Commit `615d7b0` + 工作区
+
+> **2026-11-23 说明**：主路径已恢复为 `nominal`（原始 65–90° 摔倒场景，9/9，0.155–0.305 s）；代码中保留了可选 `full_flip` 附加实验与高速翻转检测通道，不参与主矩阵。背部着地自翻正作为路线 2 单独交接（`docs/11-handoff.md`）。
 
 ---
 
@@ -21,7 +23,7 @@
   - **考核任务**：任务二 —— 恢复运控（摔倒检测 + 状态机触发 + 起身动作调用 + 失败锁存）
   - **实验平台**：云深处绝影 Lite3（无激光雷达版） / MuJoCo 4.0 官方 MJCF 物理试验台
   - **五大完整交付物**：
-    1. 唯一参数源配置：`config/recovery.yaml`（SHA-256: `99257fbee6d8`）
+    1. 唯一参数源配置：`config/recovery.yaml`（SHA-256: `0f4ace0f9e2d`）
     2. 纯逻辑核心代码：`FallDetector` + `RecoveryFSM` + `RobotBackend`
     3. 全量实测数据集：`data/raw/2026-11-19_*`（9 正式 + 3 受阻 + 3×60 s 正常小跑）
     4. 56 组网格标定数据：`data/calibration/threshold_sweep.csv`
@@ -76,7 +78,7 @@
     - `SimBackend`（MuJoCo 4.0）：加载官方 Lite3 MJCF、官方 `StandUp/LieDown` 样条与 `policy.onnx`。
     - `Ros2Backend`（实机对接）：映射 `/IMU_DATA`、`/JOINTS_DATA`、官方状态机切换指令与 `/doggie/status`。
   - **4. 唯一参数源（`config/recovery.yaml`）**：
-    - 严禁代码硬编码魔法数字；每次实验自动记录配置 SHA-256 哈希（`99257fbee6d8`），确保 100% 可复现。
+    - 严禁代码硬编码魔法数字；每次实验自动记录配置 SHA-256 哈希（`0f4ace0f9e2d`），确保 100% 可复现。
 - **右栏（配图/架构框图）**：
   - 插入架构图（对应报告图 1-1 `RecoverySupervisor` 模块数据流图）：展示 `Observation -> FallDetector -> FallEvent -> RecoveryFSM -> Mode(DAMPING/LIEDOWN/STANDUP/HOLD/RL) -> RobotBackend (SimBackend / Ros2Backend)`。
   - 辅助截图：`docs/assets/sim_smoke.png`
@@ -402,7 +404,7 @@
 - 顶部金句：不重新发明底层步态，而是构建 100% 严守“先安全阻尼、后整姿起身”的智能决策层——正式 9 次翻倒 100% 检出并恢复（平均起身 4.21 s），3 次受阻 100% 限次锁存，180 s 小跑 0 误报。
 - 左栏要点：
   - 平台：云深处绝影 Lite3（无激光雷达版） / MuJoCo 4.0 官方 MJCF 物理试验台
-  - 配置基线：config/recovery.yaml (SHA-256: 99257fbee6d8) | Git Commit: 615d7b0
+  - 配置基线：config/recovery.yaml (SHA-256: 0f4ace0f9e2d) | Git Commit: 615d7b0 + 工作区
   - 完整交付物：核心纯逻辑代码 + 9+3 实测时间序列 + 56 组网格标定数据 + 4 段未剪辑 MP4 视频
 - 右栏视觉：【替换图片：docs/report/sim_shots/grid_overview.png】
 
