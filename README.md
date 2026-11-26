@@ -24,6 +24,7 @@
 - [x] 实机恢复 profile 与人工触发接口 `/doggie/recover`（不主动制造摔倒）
 - [ ] 实机联调与受控倾斜验收（按 `docs/09-real-machine.md` 四阶段 SOP）
 - [ ] 路线 2：背部着地 RL 自翻正（交接见 `docs/11-handoff.md`，默认关闭的附加实验）
+- [x] 独立扩展：可中断 SDK 侧倒/仰倒自翻正与零落差原厂起立（`experiments/sdk_self_right/`，默认关闭，见 `docs/12-interruptible-sdk-recovery.md`）
 - [x] 技术报告与答辩材料（`docs/06-report.md`、`docs/07-slides.md`）
 
 当前 MuJoCo 演示按官方 `StandUpState` 默认时长设置每阶段 1.5 s。仿真实现复刻轨迹结构，不是直接调用官方控制器。除了平地姿态注入外，新增了从站姿小跑、撞上 11 cm 路沿后趴倒并完成起身的动态场景。
@@ -79,6 +80,7 @@
 - [实机验收指南（ROS2 话题、四阶段 SOP、指标口径与风险）](docs/09-real-machine.md)
 - [参数单一来源与随机化压力测试](docs/10-stress.md)
 - [交接文档：背部着地自翻正（路线 2）与真机接入](docs/11-handoff.md)
+- [独立扩展：可中断 SDK 侧倒/仰倒恢复使用与命令手册](docs/12-interruptible-sdk-recovery.md)
 - [汇报数据包（指标表 + 7 张图）](docs/report/data-pack.md)
 
 ## 目录结构
