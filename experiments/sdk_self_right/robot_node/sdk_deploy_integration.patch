@@ -1,0 +1,97 @@
+diff --git a/src/Lite3_sdk_deploy/state_machine/state_machine_base.h b/src/Lite3_sdk_deploy/state_machine/state_machine_base.h
+index 696b0c5..31f2a26 100644
+--- a/src/Lite3_sdk_deploy/state_machine/state_machine_base.h
++++ b/src/Lite3_sdk_deploy/state_machine/state_machine_base.h
+@@ -125,10 +125,17 @@ public:
+             if (set_timer.time_interrupt()) {
+                 ri_ptr_->RefreshRobotData();
+ 
+-                ros_control_->UpdateCommand(current_state_name_);
+-                current_controller_->Run();
++                // Read STOP before advancing the current action or consuming
++                // another movement command. Recheck after ROS input handling.
++                bool stop_requested = emergency_stop_requested_.exchange(false);
++                if (!stop_requested) {
++                    ros_control_->UpdateCommand(current_state_name_);
++                    stop_requested = emergency_stop_requested_.exchange(false);
++                }
++                if (!stop_requested) current_controller_->Run();
++                stop_requested = emergency_stop_requested_.exchange(false) || stop_requested;
+ 
+-                if (emergency_stop_requested_.exchange(false)) {
++                if (stop_requested) {
+                     {
+                         char buf[128];
+                         snprintf(buf, sizeof(buf),
+@@ -152,6 +159,9 @@ public:
+                     current_controller_->OnEnter();
+                     current_state_name_ = next_state_name_;
+                 }
++                // Send the official damping state in this tick, rather than
++                // waiting an extra tick after recording a stop.
++                if (stop_requested) current_controller_->Run();
+                 ros_control_->Publish(current_state_name_);
+                 ++run_cnt_;
+             }
+diff --git a/src/lite3_transfer/CMakeLists.txt b/src/lite3_transfer/CMakeLists.txt
+index de6deda..ffdc48e 100644
+--- a/src/lite3_transfer/CMakeLists.txt
++++ b/src/lite3_transfer/CMakeLists.txt
+@@ -58,6 +58,7 @@ message(STATUS "Using SDK library: ${SDK_LIB_PATH}")
+ 
+ # 头文件包含
+ include_directories(
++  ${CMAKE_CURRENT_SOURCE_DIR}/../../recovery_sdk/include
+   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/eigen/
+   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/gamepad/include
+   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/Lite3_MotionSDK/include/common
+@@ -73,6 +74,10 @@ file(GLOB GAMEPAD_SOURCES
+ 
+ # 创建可执行文件
+ add_executable(lite3_transfer main.cpp ${GAMEPAD_SOURCES})
++add_executable(lite3_interruptible_recovery
++  src/interruptible_recovery_node.cpp
++  ${GAMEPAD_SOURCES}
++)
+ 
+ # ROS2依赖
+ ament_target_dependencies(lite3_transfer
+@@ -80,6 +85,11 @@ ament_target_dependencies(lite3_transfer
+   rclcpp
+   drdds
+ )
++ament_target_dependencies(lite3_interruptible_recovery
++  ament_index_cpp
++  rclcpp
++  drdds
++)
+ 
+ # 链接库
+ target_link_libraries(lite3_transfer
+@@ -89,9 +99,16 @@ target_link_libraries(lite3_transfer
+   rt
+   dl
+ )
++target_link_libraries(lite3_interruptible_recovery
++  ${SDK_LIB_PATH}
++  pthread
++  m
++  rt
++  dl
++)
+ 
+ # 安装可执行文件
+-install(TARGETS lite3_transfer
++install(TARGETS lite3_transfer lite3_interruptible_recovery
+   DESTINATION lib/${PROJECT_NAME}
+ )
+ 
+@@ -105,7 +122,7 @@ install(DIRECTORY config/
+ )
+ 
+ # 设置RPATH
+-set_target_properties(lite3_transfer PROPERTIES
++set_target_properties(lite3_transfer lite3_interruptible_recovery PROPERTIES
+   INSTALL_RPATH "$ORIGIN"
+   BUILD_WITH_INSTALL_RPATH TRUE
+   SKIP_BUILD_RPATH FALSE
