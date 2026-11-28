@@ -20,10 +20,14 @@ using namespace lite3_recovery;
 
 static constexpr Commissioning kMockCommissioned{true, true, true, true};
 
-static std::string profile_path() {
+static std::string config_path(const char* filename) {
     const auto p = std::filesystem::path(__FILE__).parent_path().parent_path()
-        / "config" / "left_roll_profile.json";
+        / "config" / filename;
     return p.string();
+}
+
+static std::string profile_path() {
+    return config_path("left_roll_profile.json");
 }
 
 static void test_profile_and_kinematics() {
@@ -31,6 +35,16 @@ static void test_profile_and_kinematics() {
     CHECK(profile.segments.size() == 6);
     CHECK(valid_bounds(profile.bounds));
     CHECK(valid_trajectory(profile.start, profile.segments, profile.bounds));
+
+    auto front_prof = load_profile_json(config_path("front_restore_profile.json"), 1.0, true);
+    CHECK(front_prof.segments.size() == 2);
+    CHECK(valid_bounds(front_prof.bounds));
+    CHECK(valid_trajectory(front_prof.start, front_prof.segments, front_prof.bounds));
+
+    auto back_prof = load_profile_json(config_path("back_restore_profile.json"), 1.0, true);
+    CHECK(back_prof.segments.size() == 2);
+    CHECK(valid_bounds(back_prof.bounds));
+    CHECK(valid_trajectory(back_prof.start, back_prof.segments, back_prof.bounds));
 
     // Verify soft-gain loading also passes all checks
     auto soft = load_profile_json(profile_path(), 0.7, true);

@@ -99,6 +99,12 @@ def roll_deg_from_xyzw(q: np.ndarray) -> float:
     return math.degrees(math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)))
 
 
+def pitch_deg_from_xyzw(q: np.ndarray) -> float:
+    x, y, z, w = q
+    sinp = max(-1.0, min(1.0, 2.0 * (w * y - z * x)))
+    return math.degrees(math.asin(sinp))
+
+
 def attitude_distance_deg(a: np.ndarray, b: np.ndarray) -> float:
     dot = abs(float(np.dot(a, b)))
     na = float(np.linalg.norm(a))
@@ -244,6 +250,90 @@ def default_left_roll_profile() -> dict:
     }
 
 
+def default_front_restore_profile() -> dict:
+    """2-stage interruptible leg-restore profile for forward nose-down / bent-leg prone falls.
+    Stage 1 folds knees tightly & centers HipX to clear tangled feet off the floor and
+    level the nose-down pitch smoothly; Stage 2 aligns to canonical PRE_POSE for StandUp.
+    """
+    base = default_left_roll_profile()
+    kp_fold = [55.0] * 12
+    kp_align = [65.0] * 12
+    kd_nom = [2.5] * 12
+    seg1_fold = [0.0, -1.25, 2.65] * 4
+    seg2_prone = list(PRE_POSE)
+    return {
+        "name": "lite3_front_restore_v1",
+        "bounds": copy.deepcopy(base["bounds"]),
+        "damping": list(base["damping"]),
+        "initial_position_tolerance": 3.5,
+        "stall": copy.deepcopy(base["stall"]),
+        "start": {"position": seg2_prone, "kp": kp_fold, "kd": kd_nom},
+        "segments": [
+            {
+                "label": "front_fold_clear",
+                "duration_ms": 750,
+                "position": seg1_fold,
+                "kp": kp_fold,
+                "kd": kd_nom,
+                "expects_progress": True,
+            },
+            {
+                "label": "prone_align",
+                "duration_ms": 700,
+                "position": seg2_prone,
+                "kp": kp_align,
+                "kd": kd_nom,
+                "expects_progress": True,
+            },
+        ],
+    }
+
+
+def default_back_restore_profile() -> dict:
+    """2-stage interruptible leg-restore profile for backward sitting-back (rump-down) falls.
+    Stage 1 folds front legs gently to lower the chest/nose onto the floor while keeping
+    hind legs compactly tucked (avoiding tipping backward onto the spine);
+    Stage 2 aligns all 4 legs cleanly to canonical PRE_POSE for StandUp.
+    """
+    base = default_left_roll_profile()
+    kp_lower = [55.0] * 12
+    kp_align = [65.0] * 12
+    kd_nom = [2.5] * 12
+    seg1_lower = [
+        0.0, -1.35, 2.60,
+        0.0, -1.35, 2.60,
+        0.0, -1.55, 2.65,
+        0.0, -1.55, 2.65,
+    ]
+    seg2_prone = list(PRE_POSE)
+    return {
+        "name": "lite3_back_restore_v1",
+        "bounds": copy.deepcopy(base["bounds"]),
+        "damping": list(base["damping"]),
+        "initial_position_tolerance": 3.5,
+        "stall": copy.deepcopy(base["stall"]),
+        "start": {"position": seg2_prone, "kp": kp_lower, "kd": kd_nom},
+        "segments": [
+            {
+                "label": "back_front_lower",
+                "duration_ms": 800,
+                "position": seg1_lower,
+                "kp": kp_lower,
+                "kd": kd_nom,
+                "expects_progress": True,
+            },
+            {
+                "label": "prone_align",
+                "duration_ms": 700,
+                "position": seg2_prone,
+                "kp": kp_align,
+                "kd": kd_nom,
+                "expects_progress": True,
+            },
+        ],
+    }
+
+
 def load_model(mjcf_path: Path, hardware_limits: bool = True, obstacle: str | None = None, friction: float = 1.0) -> mujoco.MjModel:
     tree = ET.parse(mjcf_path)
     root = tree.getroot()
@@ -280,12 +370,12 @@ def load_model(mjcf_path: Path, hardware_limits: bool = True, obstacle: str | No
 
     if obstacle == "side_wall":
         wb = root.find("worldbody")
-        # Rigid wall on the left rolling side to block the roll physically
+        # Rigid wall on the left rolling side (y=+0.28) to block left roll; right side is open
         ET.SubElement(
             wb,
             "geom",
             {
-                "name": "block_wall",
+                "name": "block_wall_left",
                 "type": "box",
                 "pos": "0.0 0.28 0.25",
                 "size": "0.60 0.04 0.25",
@@ -294,9 +384,42 @@ def load_model(mjcf_path: Path, hardware_limits: bool = True, obstacle: str | No
                 "friction": "1.0 0.01 0.01",
             },
         )
+    elif obstacle == "right_wall":
+        wb = root.find("worldbody")
+        # Rigid wall on the right rolling side (y=-0.28) to block right roll; left side is open
+        ET.SubElement(
+            wb,
+            "geom",
+            {
+                "name": "block_wall_right",
+                "type": "box",
+                "pos": "0.0 -0.28 0.25",
+                "size": "0.60 0.04 0.25",
+                "rgba": "0.8 0.2 0.2 0.7",
+                "condim": "3",
+                "friction": "1.0 0.01 0.01",
+            },
+        )
+    elif obstacle == "both_walls":
+        wb = root.find("worldbody")
+        # Rigid walls on BOTH left (y=+0.28) and right (y=-0.28): both attempts blocked -> permanent stop
+        for name, ypos in (("block_wall_left", "0.28"), ("block_wall_right", "-0.28")):
+            ET.SubElement(
+                wb,
+                "geom",
+                {
+                    "name": name,
+                    "type": "box",
+                    "pos": f"0.0 {ypos} 0.25",
+                    "size": "0.60 0.04 0.25",
+                    "rgba": "0.8 0.2 0.2 0.7",
+                    "condim": "3",
+                    "friction": "1.0 0.01 0.01",
+                },
+            )
     elif obstacle == "overhead_bar":
         wb = root.find("worldbody")
-        # Low ceiling bar preventing roll/rise
+        # Low ceiling bar preventing roll/rise on both sides
         ET.SubElement(
             wb,
             "geom",
@@ -311,16 +434,15 @@ def load_model(mjcf_path: Path, hardware_limits: bool = True, obstacle: str | No
         )
     elif obstacle == "stand_ceiling":
         wb = root.find("worldbody")
-        # Ceiling placed at z=0.27m on the left-roll landing side (y=+0.30) so
-        # roll completes to prone, then stand-up is physically blocked!
+        # Full-width ceiling at z=0.27m blocking recovery on both sides
         ET.SubElement(
             wb,
             "geom",
             {
                 "name": "stand_block",
                 "type": "box",
-                "pos": "0.0 0.30 0.27",
-                "size": "0.55 0.28 0.02",
+                "pos": "0.0 0.0 0.27",
+                "size": "0.55 0.65 0.02",
                 "rgba": "0.8 0.2 0.2 0.7",
                 "condim": "3",
             },
@@ -396,12 +518,48 @@ def place_on_ground(model: mujoco.MjModel, data: mujoco.MjData, quat_wxyz: list[
     return z_touch
 
 
-def initial_joints_for_roll(init_roll_deg: float) -> np.ndarray:
-    """Return realistic resting joint angles matching real Lite3 logs:
-    - Supine (|roll| >= 135°): folded supine pose from normal-01.jsonl
-    - Side-lying (0 < |roll| < 135°): real Lite3 side-propped tripod pose
-      (torso + extended legs forming a stable triangle on the ground, recorded at 59°).
+def initial_joints_for_pose(
+    init_roll_deg: float,
+    init_pitch_deg: float = 0.0,
+    pose_kind: str = "auto",
+) -> tuple[np.ndarray, bool]:
+    """Return (resting joint angles, use_passive_hold_during_settle) matching realistic Lite3 falls:
+    - Supine (|roll| >= 135°): folded supine pose from normal-01.jsonl (pure damping settle)
+    - Side-lying (30° <= |roll| < 135°): real Lite3 side-propped tripod pose
+    - Forward nose-down / irregular bent prone: nose/chest on ground, bent/crooked legs
+    - Backward sitting-back: rump on ground, chest angled up, front legs propped, hind folded
     """
+    if pose_kind == "front_bent":
+        return np.array([
+             0.35, -0.45, 2.25,  -0.32, -0.58, 2.10,
+             0.22, -0.82, 1.45,  -0.28, -0.95, 1.60,
+        ], dtype=float), True
+    if pose_kind == "front_nose":
+        return np.array([
+             0.32, -0.25, 2.35,  -0.28, -0.35, 2.25,
+             0.18, -0.50, 0.90,  -0.18, -0.58, 1.00,
+        ], dtype=float), True
+    if pose_kind == "front_asym":
+        return np.array([
+             0.38, -0.35, 1.85,  -0.30, -1.80, 2.50,
+             0.22, -0.65, 1.15,  -0.32, -1.55, 2.20,
+        ], dtype=float), False
+    if pose_kind == "back_sit":
+        return np.array([
+             0.16, -0.35, 0.85,  -0.16, -0.38, 0.88,
+             0.25, -1.95, 2.60,  -0.25, -1.98, 2.62,
+        ], dtype=float), True
+    if pose_kind == "back_sit_steep":
+        return np.array([
+             0.20, -0.10, 0.70,  -0.20, -0.12, 0.72,
+             0.30, -2.25, 2.68,  -0.30, -2.25, 2.68,
+        ], dtype=float), True
+    if pose_kind == "back_sit_asym":
+        return np.array([
+             0.32, -0.25, 0.90,  -0.12, -0.55, 1.15,
+             0.28, -1.85, 2.55,  -0.35, -2.10, 2.65,
+        ], dtype=float), True
+
     abs_r = abs(init_roll_deg)
     if abs_r >= 135.0:
         return np.array([
@@ -409,29 +567,58 @@ def initial_joints_for_roll(init_roll_deg: float) -> np.ndarray:
              0.38, -1.70, 2.70,
             -0.42, -1.68, 2.70,
              0.42, -1.68, 2.70,
-        ], dtype=float)
-    # Real Lite3 side-propped tripod joint angles (left-side down, legs form triangle with torso)
-    left_side_tripod = [
-         0.50, -0.38, 1.00,
-        -0.50, -0.39, 1.42,
-         0.50, -0.22, 1.00,
-        -0.38, -0.42, 1.44,
-    ]
-    if init_roll_deg < 0.0:
-        return np.array(mirror_axis_right(left_side_tripod), dtype=float)
-    return np.array(left_side_tripod, dtype=float)
+        ], dtype=float), False
+    if abs_r >= 30.0:
+        # Real Lite3 side-propped tripod joint angles (left-side down, legs form triangle with torso)
+        left_side_tripod = [
+             0.50, -0.38, 1.00,
+            -0.50, -0.39, 1.42,
+             0.50, -0.22, 1.00,
+            -0.38, -0.42, 1.44,
+        ]
+        if init_roll_deg < 0.0:
+            return np.array(mirror_axis_right(left_side_tripod), dtype=float), True
+        return np.array(left_side_tripod, dtype=float), True
+    if init_pitch_deg <= -12.0:
+        return initial_joints_for_pose(init_roll_deg, init_pitch_deg, "back_sit")
+    return initial_joints_for_pose(init_roll_deg, init_pitch_deg, "front_bent")
+
+
+def select_profile_for_attitude(
+    profile_bank: dict[str, dict],
+    roll_deg: float,
+    pitch_deg: float,
+    tilt_deg: float,
+) -> tuple[dict, str]:
+    """Unified post-settle recovery strategy selector:
+    - Side-lying (|roll| >= 35°) or supine (tilt >= 120°): auto left_roll / right_roll
+    - Backward sitting-back (|roll| < 35° and pitch <= -12°): back_restore
+    - Forward nose-down / irregular bent prone: front_restore
+    """
+    if abs(roll_deg) >= 35.0 or tilt_deg >= 120.0:
+        if -165.0 < roll_deg < 0.0:
+            return profile_bank["right"], "right_roll"
+        return profile_bank["left"], "left_roll"
+    if pitch_deg <= -12.0:
+        return profile_bank["back"], "back_restore"
+    return profile_bank["front"], "front_restore"
 
 
 def run_trial(
-    profile: dict,
+    profile: dict | None,
     *,
+    profile_bank: dict[str, dict] | None = None,
     init_roll_deg: float = 180.0,
     init_pitch_deg: float = 0.0,
+    pose_kind: str = "auto",
     friction: float = 1.0,
     stop_at_ms: int | None = None,
     obstacle: str | None = None,
     hardware_limits: bool = True,
     kp_scale: float = 1.0,
+    retry_opposite_wait_ms: int = 2000,
+    max_roll_attempts: int = 2,
+    force_first_strategy: str | None = None,
     view: bool = False,
     speed: float = 1.0,
 ) -> dict:
@@ -445,7 +632,7 @@ def run_trial(
     cp, sp = math.cos(p / 2.0), math.sin(p / 2.0)
     # w, x, y, z for R = Ry(p) * Rx(r)
     quat_wxyz = [cp * cr, cp * sr, sp * cr, -sp * sr]
-    init_pose_q = initial_joints_for_roll(init_roll_deg)
+    init_pose_q, use_passive_hold = initial_joints_for_pose(init_roll_deg, init_pitch_deg, pose_kind)
     place_on_ground(model, data, quat_wxyz, init_pose_q)
 
     viewer = None
@@ -468,15 +655,13 @@ def run_trial(
         return True
 
     # Settle naturally on the ground for 0.8s:
-    # For side-propped tripod poses (45°..135°), passive motor friction / mild stiction
-    # keeps the triangle propped on the ground (matching real Lite3 motor gearbox resistance),
-    # whereas supine rests passively in pure damping.
-    is_side_tripod = 30.0 <= abs(init_roll_deg) < 135.0
+    # For side-propped tripod or front/back crooked-leg falls, mild passive gearbox
+    # resistance holds the realistic fallen posture on the ground before recovery starts;
+    # supine / limp falls settle in pure damping.
     for settle_i in range(800):
         q = data.qpos[7:19]
         v = data.qvel[6:18]
-        if is_side_tripod:
-            # Mild passive joint resistance holding the propped tripod stably on floor
+        if use_passive_hold:
             data.ctrl[:] = np.clip(18.0 * (init_pose_q - q) - 3.5 * v, -20.0, 20.0)
         else:
             data.ctrl[:] = -DAMPING_KD * v
@@ -485,7 +670,23 @@ def run_trial(
             break
 
     init_settled_q = data.qpos[7:19].copy()
-    init_settled_tilt = tilt_deg_from_xyzw(quat_wxyz_to_xyzw(data.qpos[3:7]))
+    init_quat_xyzw = quat_wxyz_to_xyzw(data.qpos[3:7])
+    init_settled_tilt = tilt_deg_from_xyzw(init_quat_xyzw)
+    init_settled_roll = roll_deg_from_xyzw(init_quat_xyzw)
+    init_settled_pitch = pitch_deg_from_xyzw(init_quat_xyzw)
+
+    if profile_bank is not None:
+        if force_first_strategy is not None:
+            key_map = {"left_roll": "left", "right_roll": "right", "front_restore": "front", "back_restore": "back"}
+            profile = profile_bank[key_map[force_first_strategy]]
+            selected_strategy = force_first_strategy
+        else:
+            profile, selected_strategy = select_profile_for_attitude(
+                profile_bank, init_settled_roll, init_settled_pitch, init_settled_tilt
+            )
+    else:
+        assert profile is not None
+        selected_strategy = profile.get("name", "custom")
 
     segments = profile["segments"]
     stall_cfg = profile["stall"]
@@ -497,16 +698,23 @@ def run_trial(
     )
 
     phase = "rolling"
+    attempt = 1
+    strategies_tried = [selected_strategy]
     roll_start_ms = 0
     total_roll_ms = sum(seg["duration_ms"] for seg in segments)
     effort_bounds = np.array(profile["bounds"]["max_effort"], dtype=float)
     prone_stable_start_ms = None
+    prone_fail_start_ms = None
     stand_start_ms = None
     stand_init_q = None
     stand_init_v = None
     stop_reason = None
     stop_ms = None
     first_damping_ms = None
+    first_stop_reason = None
+    first_stop_ms = None
+    first_damping_delay_ms = None
+    retry_wait_start_ms = None
     peak_torque = 0.0
     peak_guard_effort_ratio = 0.0
     peak_vel = 0.0
@@ -517,7 +725,28 @@ def run_trial(
     first_kd = np.array(profile["start"]["kd"], dtype=float)
     damping_kd = np.array(profile["damping"], dtype=float)
 
-    max_ms = 9500
+    def handle_obstacle_stop(reason: str, t_now: int):
+        nonlocal phase, stop_reason, stop_ms, first_damping_ms
+        nonlocal first_stop_reason, first_stop_ms, first_damping_delay_ms, retry_wait_start_ms
+        can_retry = (
+            profile_bank is not None
+            and attempt < max_roll_attempts
+            and selected_strategy in ("left_roll", "right_roll")
+            and reason in ("stall", "prone_timeout", "roll_blocked", "effort_fault")
+        )
+        if can_retry:
+            first_stop_reason = reason
+            first_stop_ms = t_now
+            first_damping_delay_ms = 0
+            retry_wait_start_ms = t_now
+            phase = "retry_wait"
+            stall.reset()
+        else:
+            stop_reason = reason
+            stop_ms = t_now
+            phase = "stopped"
+
+    max_ms = 18500
     for t_ms in range(max_ms):
         q = data.qpos[7:19].copy()
         v = data.qvel[6:18].copy()
@@ -525,10 +754,29 @@ def run_trial(
         tilt = tilt_deg_from_xyzw(quat)
         peak_vel = max(peak_vel, float(np.max(np.abs(v))))
 
-        if stop_at_ms is not None and t_ms == stop_at_ms and stop_reason is None:
+        if stop_at_ms is not None and t_ms == stop_at_ms and phase != "stopped":
+            # Operator handset STOP always latches permanently (never auto-retries!)
             stop_reason = "handset_stop"
             stop_ms = t_ms
             phase = "stopped"
+
+        if phase == "retry_wait":
+            # Hold pure damping for retry_opposite_wait_ms (default 2000ms), then retry opposite side!
+            if t_ms - retry_wait_start_ms >= retry_opposite_wait_ms:
+                next_key = "right" if selected_strategy == "left_roll" else "left"
+                selected_strategy = "right_roll" if next_key == "right" else "left_roll"
+                profile = profile_bank[next_key]
+                segments = profile["segments"]
+                total_roll_ms = sum(seg["duration_ms"] for seg in segments)
+                effort_bounds = np.array(profile["bounds"]["max_effort"], dtype=float)
+                init_settled_q = q.copy()
+                roll_start_ms = t_ms
+                prone_stable_start_ms = None
+                prone_fail_start_ms = None
+                stall.reset()
+                attempt += 1
+                strategies_tried.append(selected_strategy)
+                phase = "rolling"
 
         if phase == "rolling":
             elapsed = t_ms - roll_start_ms
@@ -539,6 +787,8 @@ def run_trial(
             if idx == len(segments):
                 phase = "prone_check"
                 roll_end_tilt = tilt
+                prone_stable_start_ms = None
+                prone_fail_start_ms = None
                 stall.reset()
             else:
                 seg = segments[idx]
@@ -559,9 +809,7 @@ def run_trial(
                 if t_ms % 5 == 0:
                     if seg["expects_progress"]:
                         if stall.update(t_ms, q, v, quat):
-                            stop_reason = "stall"
-                            stop_ms = t_ms
-                            phase = "stopped"
+                            handle_obstacle_stop("stall", t_ms)
                     else:
                         stall.reset()
 
@@ -573,6 +821,7 @@ def run_trial(
             # Prone confirmation: tilt <= 20 deg and joints converged near prone pose
             joint_err = float(np.max(np.abs(q - np.array(PRE_POSE))))
             if tilt <= 20.0 and joint_err <= 0.65:
+                prone_fail_start_ms = None
                 if prone_stable_start_ms is None:
                     prone_stable_start_ms = t_ms
                 elif t_ms - prone_stable_start_ms >= 500:
@@ -583,10 +832,16 @@ def run_trial(
                     stall.reset()
             else:
                 prone_stable_start_ms = None
-                if t_ms - roll_start_ms >= total_roll_ms + 1800:
-                    stop_reason = "prone_timeout"
-                    stop_ms = t_ms
-                    phase = "stopped"
+                # Fast blocked-roll detection: if roll ended and torso fell back > 90 deg for 600ms
+                if tilt > 90.0:
+                    if prone_fail_start_ms is None:
+                        prone_fail_start_ms = t_ms
+                    elif t_ms - prone_fail_start_ms >= 600:
+                        handle_obstacle_stop("roll_blocked", t_ms)
+                else:
+                    prone_fail_start_ms = None
+                if phase == "prone_check" and t_ms - roll_start_ms >= total_roll_ms + 1800:
+                    handle_obstacle_stop("prone_timeout", t_ms)
 
         if phase == "standing":
             st = (t_ms - stand_start_ms) / 1000.0
@@ -631,21 +886,21 @@ def run_trial(
                     stop_ms = t_ms
                     phase = "stopped"
 
-        if phase != "stopped":
+        if phase not in ("stopped", "retry_wait"):
             tau_unclamped = cmd_kp * (cmd_q - q) + cmd_kd * (cmd_v - v)
             ratio = float(np.max(np.abs(tau_unclamped) / effort_bounds))
             peak_guard_effort_ratio = max(peak_guard_effort_ratio, ratio)
             if ratio > 1.0:
-                stop_reason = "effort_fault"
-                stop_ms = t_ms
-                phase = "stopped"
+                handle_obstacle_stop("effort_fault", t_ms)
 
         if phase == "stopped":
             if first_damping_ms is None:
                 first_damping_ms = t_ms
             tau = -damping_kd * v
-            if t_ms - stop_ms >= 1500:
+            if t_ms - stop_ms >= 2000:
                 break
+        elif phase == "retry_wait":
+            tau = -damping_kd * v
         else:
             tau = tau_unclamped
 
@@ -681,11 +936,19 @@ def run_trial(
     final_h = float(data.qpos[2])
     final_max_vel = float(np.max(np.abs(data.qvel[6:18])))
     return {
+        "strategy": selected_strategy,
+        "attempts": attempt,
+        "strategies_tried": strategies_tried,
+        "first_stop_reason": first_stop_reason,
+        "first_stop_ms": first_stop_ms,
+        "first_damping_delay_ms": first_damping_delay_ms,
+        "retry_wait_ms": retry_opposite_wait_ms if attempt > 1 else None,
         "phase": phase,
         "stop_reason": stop_reason,
         "stop_ms": stop_ms,
         "damping_delay_ms": (first_damping_ms - stop_ms) if stop_ms is not None and first_damping_ms is not None else None,
         "init_tilt_deg": round(init_settled_tilt, 1),
+        "init_pitch_deg": round(init_settled_pitch, 1),
         "roll_end_tilt_deg": round(roll_end_tilt, 1) if roll_end_tilt is not None else None,
         "final_tilt_deg": round(final_tilt, 1),
         "final_height_m": round(final_h, 3),
@@ -745,29 +1008,45 @@ def all_scenarios() -> dict[str, tuple[str, str, dict]]:
         "side_right_90": ("side", "右侧倒 -90° 自动镜像右翻 + 站立", dict(init_roll_deg=-90.0)),
         "side_left_110": ("side", "左侧倒 +110° 自动左翻 + 站立", dict(init_roll_deg=110.0)),
         "side_right_110": ("side", "右侧倒 -110° 自动镜像右翻 + 站立", dict(init_roll_deg=-110.0)),
-        # 3. 翻身/起立中途 STOP 中断
+        # 3. 前/后摔倒（机首倒地曲折趴姿 / 向后坐姿）整理腿姿 + 站立
+        "front_bent_prone": ("pitch", "前摔机首着地 + 曲折不规则腿姿 → 整理腿姿 + 站立", dict(init_roll_deg=0.0, init_pitch_deg=22.0, pose_kind="front_bent")),
+        "front_nose_steep": ("pitch", "前摔大俯仰机首扎地 (+35°) → 整理腿姿 + 站立", dict(init_roll_deg=0.0, init_pitch_deg=35.0, pose_kind="front_nose")),
+        "front_asym_tangled": ("pitch", "前摔不对称扭曲（自动按落定姿态选策略）→ 站立", dict(init_roll_deg=10.0, init_pitch_deg=28.0, pose_kind="front_asym")),
+        "front_soft_kp": ("pitch", "前摔机首着地 70% 软增益 → 整理腿姿 + 站立", dict(init_roll_deg=0.0, init_pitch_deg=26.0, pose_kind="front_bent", kp_scale=0.7)),
+        "back_sit": ("pitch", "后摔坐下姿态 (-35° 臀着地前腿撑) → 落胸收腿 + 站立", dict(init_roll_deg=0.0, init_pitch_deg=-35.0, pose_kind="back_sit")),
+        "back_sit_steep": ("pitch", "后摔大仰角坐姿 (-55°) → 落胸收腿 + 站立", dict(init_roll_deg=0.0, init_pitch_deg=-55.0, pose_kind="back_sit_steep")),
+        "back_sit_asym": ("pitch", "后摔偏倾不对称坐姿 (roll -10°, pitch -40°) → 站立", dict(init_roll_deg=-10.0, init_pitch_deg=-40.0, pose_kind="back_sit_asym")),
+        "back_soft_kp": ("pitch", "后摔坐姿 70% 软增益 → 落胸收腿 + 站立", dict(init_roll_deg=0.0, init_pitch_deg=-35.0, pose_kind="back_sit", kp_scale=0.7)),
+        # 4. 翻身/整腿/起立中途 STOP 中断
         "stop_early": ("stop", "翻身早段 (0.8s) STOP 切纯阻尼", dict(init_roll_deg=180.0, stop_at_ms=800)),
         "stop_mid": ("stop", "翻身中段 (2.0s) STOP 切纯阻尼", dict(init_roll_deg=180.0, stop_at_ms=2000)),
         "stop_stand": ("stop", "起立段 (5.5s) STOP 切纯阻尼", dict(init_roll_deg=180.0, stop_at_ms=5500)),
-        # 4. 障碍物受阻保护
-        "blocked_side_wall": ("blocked", "左侧刚体墙受阻 → 锁存纯阻尼", dict(init_roll_deg=180.0, obstacle="side_wall")),
-        "blocked_overhead": ("blocked", "上方低矮顶障受阻 → 锁存纯阻尼", dict(init_roll_deg=180.0, obstacle="overhead_bar")),
-        "blocked_stand_ceil": ("blocked", "起立顶部遮挡受阻 → 锁存纯阻尼", dict(init_roll_deg=180.0, obstacle="stand_ceiling")),
+        "stop_front_mid": ("stop", "前摔整腿中段 (0.6s) STOP 切纯阻尼", dict(init_roll_deg=0.0, init_pitch_deg=26.0, pose_kind="front_bent", stop_at_ms=600)),
+        "stop_back_mid": ("stop", "后摔坐姿整腿中段 (0.6s) STOP 切纯阻尼", dict(init_roll_deg=0.0, init_pitch_deg=-35.0, pose_kind="back_sit", stop_at_ms=600)),
+        # 5. 单侧障碍受阻 → 纯阻尼停等 2s → 换另一侧翻身恢复成功
+        "blocked_side_wall": ("obstacle_retry", "左侧墙受阻 → 0ms纯阻尼等2s → 换右侧翻身+站立", dict(init_roll_deg=180.0, obstacle="side_wall")),
+        "blocked_right_wall": ("obstacle_retry", "右侧墙受阻 → 0ms纯阻尼等2s → 换左侧翻身+站立", dict(init_roll_deg=180.0, obstacle="right_wall", force_first_strategy="right_roll")),
+        # 6. 双侧/顶部均受阻 → 第二次仍失败后永久锁存纯阻尼停下
+        "blocked_both_walls": ("blocked", "左右双侧墙受阻 → 换侧仍失败 → 永久停纯阻尼", dict(init_roll_deg=180.0, obstacle="both_walls")),
+        "blocked_overhead": ("blocked", "上方低矮顶障受阻 → 换侧仍失败 → 永久停纯阻尼", dict(init_roll_deg=180.0, obstacle="overhead_bar")),
+        "blocked_stand_ceil": ("blocked", "全宽顶障受阻 → 换侧仍失败 → 永久停纯阻尼", dict(init_roll_deg=180.0, obstacle="stand_ceiling")),
     }
 
 
 def main():
     scenarios = all_scenarios()
-    scenario_choices = list(scenarios.keys()) + ["nominal", "demo_all", "demo_sides", "custom"]
+    scenario_choices = list(scenarios.keys()) + ["nominal", "demo_all", "demo_sides", "demo_pitch", "demo_obstacle", "custom"]
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--suite", choices=["quick", "all"], default="all")
     parser.add_argument("--export-profile", type=Path, default=None)
+    parser.add_argument("--export-all-profiles", type=Path, default=None, help="Directory to export left/front/back profile JSONs")
     parser.add_argument("--view", action="store_true", help="Open interactive 3D MuJoCo viewer window")
-    parser.add_argument("--scenario", choices=scenario_choices, default=None, help="Run a single named scenario (or demo_all / demo_sides / custom)")
+    parser.add_argument("--scenario", choices=scenario_choices, default=None, help="Run a single named scenario (or demo_all / demo_sides / demo_pitch / demo_obstacle / custom)")
     parser.add_argument("--speed", type=float, default=1.0, help="Playback speed multiplier in --view mode")
     parser.add_argument("--roll", type=float, default=180.0, help="Custom initial roll angle (deg) for --scenario custom")
     parser.add_argument("--pitch", type=float, default=0.0, help="Custom initial pitch angle (deg) for --scenario custom")
+    parser.add_argument("--pose-kind", choices=["auto", "front_bent", "front_nose", "front_asym", "back_sit", "back_sit_steep", "back_sit_asym"], default="auto")
     parser.add_argument("--friction", type=float, default=1.0, help="Custom floor friction for --scenario custom")
     parser.add_argument("--kp-scale", type=float, default=1.0, help="Custom kp scale for --scenario custom")
     parser.add_argument("--stop-ms", type=int, default=None, help="Custom STOP injection time (ms) for --scenario custom")
@@ -775,23 +1054,52 @@ def main():
 
     left_profile = default_left_roll_profile()
     right_profile = mirror_profile_right(left_profile)
+    front_profile = default_front_restore_profile()
+    back_profile = default_back_restore_profile()
+    profile_bank = {
+        "left": left_profile,
+        "right": right_profile,
+        "front": front_profile,
+        "back": back_profile,
+    }
+
+    def maybe_export():
+        if args.export_profile:
+            args.export_profile.parent.mkdir(parents=True, exist_ok=True)
+            args.export_profile.write_text(json.dumps(left_profile, indent=2) + "\n", encoding="utf-8")
+            print(f"\nExported profile to {args.export_profile}")
+        if args.export_all_profiles:
+            args.export_all_profiles.mkdir(parents=True, exist_ok=True)
+            for fname, prof_obj in (
+                ("left_roll_profile.json", left_profile),
+                ("front_restore_profile.json", front_profile),
+                ("back_restore_profile.json", back_profile),
+            ):
+                p = args.export_all_profiles / fname
+                p.write_text(json.dumps(prof_obj, indent=2) + "\n", encoding="utf-8")
+                print(f"Exported {p}")
 
     if args.scenario is not None or args.view:
         chosen = args.scenario or "nominal_180"
         if chosen == "nominal":
             chosen = "nominal_180"
         if chosen == "demo_all":
-            keys = ["nominal_180", "side_left_59", "side_right_90", "stop_mid", "blocked_side_wall", "blocked_overhead"]
+            keys = ["front_bent_prone", "back_sit", "nominal_180", "side_left_59", "side_right_90", "stop_mid", "blocked_side_wall", "blocked_both_walls"]
         elif chosen == "demo_sides":
             keys = ["side_left_59", "side_right_59", "side_left_90", "side_right_90", "side_left_110", "side_right_110"]
+        elif chosen == "demo_pitch":
+            keys = ["front_bent_prone", "front_nose_steep", "back_sit", "back_sit_steep", "stop_front_mid", "stop_back_mid"]
+        elif chosen == "demo_obstacle":
+            keys = ["blocked_side_wall", "blocked_right_wall", "blocked_both_walls", "blocked_overhead"]
         elif chosen == "custom":
             keys = []
-            prof, direction = select_profile_for_roll(left_profile, right_profile, args.roll)
-            print(f"\n>>> Custom scenario: roll={args.roll}°, pitch={args.pitch}°, dir={direction}, kp_scale={args.kp_scale}", flush=True)
+            print(f"\n>>> Custom scenario: roll={args.roll}°, pitch={args.pitch}°, pose={args.pose_kind}, kp_scale={args.kp_scale}", flush=True)
             res = run_trial(
-                prof,
+                None,
+                profile_bank=profile_bank,
                 init_roll_deg=args.roll,
                 init_pitch_deg=args.pitch,
+                pose_kind=args.pose_kind,
                 friction=args.friction,
                 kp_scale=args.kp_scale,
                 stop_at_ms=args.stop_ms,
@@ -804,35 +1112,42 @@ def main():
 
         for key in keys:
             cat, title, kw = scenarios[key]
-            prof, direction = select_profile_for_roll(left_profile, right_profile, kw.get("init_roll_deg", 180.0))
-            print(f"\n>>> [{key}] ({direction}) {title}", flush=True)
-            res = run_trial(prof, view=args.view, speed=args.speed, **kw)
+            print(f"\n>>> [{key}] {title}", flush=True)
+            res = run_trial(None, profile_bank=profile_bank, view=args.view, speed=args.speed, **kw)
             print(f"    Result: {json.dumps(res)}", flush=True)
-        if args.export_profile:
-            args.export_profile.parent.mkdir(parents=True, exist_ok=True)
-            args.export_profile.write_text(json.dumps(left_profile, indent=2) + "\n", encoding="utf-8")
+        maybe_export()
         return
 
     all_ok = True
     groups = [
         ("1. Supine & Perturbed Left-Roll + StandUp", "supine"),
         ("2. Multi-Angle Left/Right Side-Lying Auto-Direction + StandUp", "side"),
-        ("3. Mid-Recovery STOP Interruption Tests (Early / Mid / Stand)", "stop"),
-        ("4. Obstructed / Blocked Recovery Stall Tests", "blocked"),
+        ("3. Forward Nose-Down & Backward Sit-Back Leg-Restore + StandUp", "pitch"),
+        ("4. Mid-Recovery STOP Interruption Tests (Roll / Pitch-Restore / Stand)", "stop"),
+        ("5. Single-Side Obstacle -> 2s Pure Damping -> Opposite-Side Recovery", "obstacle_retry"),
+        ("6. Both-Sides / Overhead Blocked -> 2nd Failure Permanent Stop", "blocked"),
     ]
     for header, cat in groups:
         print(f"\n=== {header} ===")
         items = [(k, v) for k, v in scenarios.items() if v[0] == cat]
-        if args.suite == "quick" and cat in ("supine", "side"):
+        if args.suite == "quick" and cat in ("supine", "side", "pitch"):
             items = items[:2]
         for key, (_, _, kw) in items:
-            prof, direction = select_profile_for_roll(left_profile, right_profile, kw.get("init_roll_deg", 180.0))
-            res = run_trial(prof, **kw)
-            if cat in ("supine", "side"):
-                ok = res["phase"] == "upright_hold"
+            res = run_trial(None, profile_bank=profile_bank, **kw)
+            if cat in ("supine", "side", "pitch"):
+                ok = res["phase"] == "upright_hold" and res["attempts"] == 1
+            elif cat == "obstacle_retry":
+                ok = (
+                    res["phase"] == "upright_hold"
+                    and res["attempts"] == 2
+                    and res["first_damping_delay_ms"] == 0
+                    and res["retry_wait_ms"] == 2000
+                    and len(set(res["strategies_tried"])) == 2
+                )
             elif cat == "stop":
                 ok = (
                     res["phase"] == "stopped"
+                    and res["attempts"] == 1
                     and res["stop_reason"] == "handset_stop"
                     and res["damping_delay_ms"] == 0
                     and res["final_max_joint_vel"] < 0.5
@@ -840,18 +1155,16 @@ def main():
             else:
                 ok = (
                     res["phase"] == "stopped"
-                    and res["stop_reason"] in ("stall", "prone_timeout", "stand_failed", "effort_fault")
+                    and res["attempts"] == 2
+                    and res["stop_reason"] in ("stall", "prone_timeout", "roll_blocked", "stand_failed", "effort_fault")
+                    and res["first_damping_delay_ms"] == 0
                     and res["damping_delay_ms"] == 0
                     and res["final_max_joint_vel"] < 0.5
                 )
             all_ok &= ok
-            print(f"  [{'PASS' if ok else 'FAIL'}] {key:18s} ({direction:5s}): {json.dumps(res)}")
+            print(f"  [{'PASS' if ok else 'FAIL'}] {key:20s} ({' -> '.join(res['strategies_tried']):24s}): {json.dumps(res)}")
 
-    if args.export_profile:
-        args.export_profile.parent.mkdir(parents=True, exist_ok=True)
-        args.export_profile.write_text(json.dumps(left_profile, indent=2) + "\n", encoding="utf-8")
-        print(f"\nExported profile to {args.export_profile}")
-
+    maybe_export()
     sys.exit(0 if all_ok else 1)
 
 

@@ -9,6 +9,7 @@ AUDIT_DIR="${LITE3_SDK_AUDIT_DIR:-$HOME/.lite3-sdk-audits}"
 LOCK_DIR="${LITE3_SDK_LOCK_DIR:-$HOME/.lite3-recovery-attempts}"
 PID_FILE="/tmp/lite3-auto-recovery.pid"
 LOG_LINK="/tmp/lite3-auto-recovery.latest.jsonl"
+CONSOLE_LINK="/tmp/lite3-auto-recovery.latest.console.log"
 PROFILE_DEFAULT="$WS/recovery_sdk/config/left_roll_profile.json"
 
 usage() {
@@ -125,6 +126,7 @@ case "$cmd" in
     pid=$!
     echo "$pid" > "$PID_FILE"
     ln -sfn "$audit_file" "$LOG_LINK"
+    ln -sfn "$console_log" "$CONSOLE_LINK"
     sleep 1.0
     if ! kill -0 "$pid" 2>/dev/null; then
       rm -f "$PID_FILE"

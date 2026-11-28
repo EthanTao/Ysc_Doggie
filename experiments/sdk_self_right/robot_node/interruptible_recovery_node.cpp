@@ -135,11 +135,14 @@ struct Options {
     int gamepad_port{12121};
     int duration_s{120};
     Millis stable_wait_ms{2000};
+    Millis retry_wait_ms{2000};
     double kp_scale{1.0};
     double damping_hold_s{0.25};
     bool damping_hold_explicit{false};
     double stand_hold_s{2.0};
     std::string profile_path;
+    std::string front_profile_path;
+    std::string back_profile_path;
     std::string audit_path;
     std::string lock_dir;
     std::string deeprcs_log_root{"/home/ysc/jy_exe/log"};
@@ -160,8 +163,11 @@ void print_usage(const char* argv0) {
               << "  --gamepad-port <port>              (default: 12121)\n"
               << "  --duration <sec>                   (default: 120, range 1..86400; ignored with --continuous)\n"
               << "  --stable-wait-ms <ms>              (default: 2000, stable fallen wait before recovery)\n"
+              << "  --retry-wait-ms <ms>               (default: 2000, damping wait before opposite-side retry)\n"
               << "  --kp-scale <0.2..1.0>              (default: 1.0)\n"
-              << "  --profile <json>                   (required for recover)\n"
+              << "  --profile <json>                   (required for recover; left roll profile)\n"
+              << "  --front-profile <json>             (optional; defaults to sibling front_restore_profile.json)\n"
+              << "  --back-profile <json>              (optional; defaults to sibling back_restore_profile.json)\n"
               << "  --audit <new.jsonl>                (required for stop-test/recover)\n"
               << "  --lock-dir <dir>                   (default: $HOME/.lite3-recovery-attempts)\n"
               << "  --deeprcs-log-root <dir>           (default: /home/ysc/jy_exe/log)\n"
@@ -198,6 +204,8 @@ bool parse_args(int argc, char** argv, Options& opt) {
             opt.duration_s = std::stoi(next_val(a));
         } else if (a == "--stable-wait-ms") {
             opt.stable_wait_ms = static_cast<Millis>(std::stoull(next_val(a)));
+        } else if (a == "--retry-wait-ms") {
+            opt.retry_wait_ms = static_cast<Millis>(std::stoull(next_val(a)));
         } else if (a == "--kp-scale") {
             opt.kp_scale = std::stod(next_val(a));
         } else if (a == "--damping-hold-s") {
@@ -205,6 +213,10 @@ bool parse_args(int argc, char** argv, Options& opt) {
             opt.damping_hold_explicit = true;
         } else if (a == "--profile") {
             opt.profile_path = next_val(a);
+        } else if (a == "--front-profile") {
+            opt.front_profile_path = next_val(a);
+        } else if (a == "--back-profile") {
+            opt.back_profile_path = next_val(a);
         } else if (a == "--audit") {
             opt.audit_path = next_val(a);
         } else if (a == "--lock-dir") {
@@ -227,6 +239,8 @@ bool parse_args(int argc, char** argv, Options& opt) {
         throw std::runtime_error("--duration must be in [1, 86400]");
     if (opt.stable_wait_ms < 300 || opt.stable_wait_ms > 30000)
         throw std::runtime_error("--stable-wait-ms must be in [300, 30000]");
+    if (opt.retry_wait_ms < 500 || opt.retry_wait_ms > 30000)
+        throw std::runtime_error("--retry-wait-ms must be in [500, 30000]");
     if (!within(opt.kp_scale, 0.2, 1.0))
         throw std::runtime_error("--kp-scale must be in [0.2, 1.0]");
     if (opt.mode == "stop-test" && !opt.damping_hold_explicit) {
@@ -1044,26 +1058,96 @@ private:
         uint64_t cycle_idx = 0;
         int last_rc = 0;
 
+        enum class RecoveryStrategy { left_roll, right_roll, front_restore, back_restore };
+        auto strategy_name = [](RecoveryStrategy s) -> const char* {
+            switch (s) {
+                case RecoveryStrategy::left_roll:     return "left_roll";
+                case RecoveryStrategy::right_roll:    return "right_roll";
+                case RecoveryStrategy::front_restore: return "front_restore";
+                case RecoveryStrategy::back_restore:  return "back_restore";
+            }
+            return "unknown";
+        };
+        auto is_directional_roll = [](RecoveryStrategy s) -> bool {
+            return s == RecoveryStrategy::left_roll || s == RecoveryStrategy::right_roll;
+        };
+
         const Profile right_profile = mirror_profile_right(profile);
         if (!valid_trajectory(right_profile.start, right_profile.segments, right_profile.bounds)) {
             throw std::runtime_error("Mirrored right-roll profile failed trajectory validation");
         }
 
+        // Load forward (nose-down / bent-leg prone) and backward (sitting-back) leg-restore profiles.
+        const auto profile_dir = fs::path(opt_.profile_path).parent_path();
+        const std::string front_path = opt_.front_profile_path.empty()
+            ? (profile_dir / "front_restore_profile.json").string()
+            : opt_.front_profile_path;
+        const std::string back_path = opt_.back_profile_path.empty()
+            ? (profile_dir / "back_restore_profile.json").string()
+            : opt_.back_profile_path;
+
+        bool has_pitch_profiles = false;
+        Profile front_profile{};
+        Profile back_profile{};
+        if (fs::exists(front_path) && fs::exists(back_path)) {
+            front_profile = load_profile_json(front_path, opt_.kp_scale, true);
+            back_profile = load_profile_json(back_path, opt_.kp_scale, true);
+            if (!valid_trajectory(front_profile.start, front_profile.segments, front_profile.bounds)) {
+                throw std::runtime_error("Front-restore profile failed trajectory validation: " + front_path);
+            }
+            if (!valid_trajectory(back_profile.start, back_profile.segments, back_profile.bounds)) {
+                throw std::runtime_error("Back-restore profile failed trajectory validation: " + back_path);
+            }
+            has_pitch_profiles = true;
+            log_event("pitch_profiles_loaded",
+                      "\"front\":\"" + front_path + "\",\"back\":\"" + back_path + "\"");
+        }
+
+        auto profile_for = [&](RecoveryStrategy s) -> const Profile* {
+            switch (s) {
+                case RecoveryStrategy::left_roll:     return &profile;
+                case RecoveryStrategy::right_roll:    return &right_profile;
+                case RecoveryStrategy::front_restore: return has_pitch_profiles ? &front_profile : &profile;
+                case RecoveryStrategy::back_restore:  return has_pitch_profiles ? &back_profile : &profile;
+            }
+            return &profile;
+        };
+
+        auto select_strategy = [&](double roll_deg, double pitch_deg, double tilt_deg) -> RecoveryStrategy {
+            if (!has_pitch_profiles || std::abs(roll_deg) >= 35.0 || tilt_deg >= 120.0) {
+                if (roll_deg < 0.0 && roll_deg > -165.0) return RecoveryStrategy::right_roll;
+                return RecoveryStrategy::left_roll;
+            }
+            if (pitch_deg <= -12.0) return RecoveryStrategy::back_restore;
+            return RecoveryStrategy::front_restore;
+        };
+
+        // Opposite-side retry state: when Attempt 1 (left_roll/right_roll) hits an obstacle,
+        // wait opt_.retry_wait_ms (2000 ms) safely, then retry the opposite side ONCE.
+        // If Attempt 2 also fails (or operator presses STOP), lock until manual upright 3s.
+        bool has_forced_retry = false;
+        RecoveryStrategy forced_retry_strategy = RecoveryStrategy::right_roll;
+
         while (!shutdown_.load() && !cancel_requested_.load() && steady_ms() < global_deadline) {
             ++cycle_idx;
             const uint64_t attempt_session = session_id + cycle_idx;
+            const bool is_retry_attempt = has_forced_retry;
+            const RecoveryStrategy initial_strategy = is_retry_attempt
+                ? forced_retry_strategy
+                : RecoveryStrategy::left_roll;
+            has_forced_retry = false;
 
             SequenceConfig seq_cfg{};
-            seq_cfg.fall_tilt_deg = 45.0; // Catches side-lying falls (>=45 deg) while >35 deg above normal walking
-            seq_cfg.supine_tilt_deg = 45.0; // Both side-lying (45..120 deg) and supine (>=120 deg) use directional roll!
+            // With pitch profiles loaded: detect nose-down/sit-back >= 18 deg (gated by height < 0.25m
+            // in [18..35 deg] so standing/walking on slopes never false-triggers!) and side/supine >= 35 deg.
+            seq_cfg.fall_tilt_deg = has_pitch_profiles ? 18.0 : 45.0;
+            seq_cfg.supine_tilt_deg = has_pitch_profiles ? 18.0 : 45.0;
             seq_cfg.detect_dwell_ms = 300;
-            seq_cfg.stable_dwell_ms = opt_.stable_wait_ms;
+            seq_cfg.stable_dwell_ms = is_retry_attempt ? opt_.retry_wait_ms : opt_.stable_wait_ms;
             seq_cfg.allow_prone_shortcut = opt_.allow_prone_shortcut;
 
-            // Default controller uses left profile; if robot settles right-side-down
-            // (-165 < roll < 0) before rolling starts, we hot-swap to right_profile.
-            bool using_right_profile = false;
-            const Profile* active_profile = &profile;
+            RecoveryStrategy active_strategy = initial_strategy;
+            const Profile* active_profile = profile_for(active_strategy);
             {
                 std::lock_guard<std::mutex> glock(guard_call_mu_);
                 sdk_authority_.store(false);
@@ -1080,7 +1164,7 @@ private:
                 factory_standing_started_.store(false);
                 factory_force_control_.store(false);
 
-                controller_ = std::make_unique<Controller>(profile, seq_cfg);
+                controller_ = std::make_unique<Controller>(*active_profile, seq_cfg);
                 Commissioning checks{true, true, true, true};
                 if (!controller_->enable(attempt_session, checks, true)) {
                     throw std::runtime_error("Controller::enable() rejected profile/commissioning");
@@ -1094,11 +1178,17 @@ private:
 
             Phase last_phase = Phase::watching;
             bool logged_fall_detected = false;
+            bool post_fall_latched = false;
+            Millis post_fall_upright_since = 0;
             bool cycle_succeeded = false;
             bool cycle_aborted = false;
+            bool retry_cancelled_by_operator = false;
+            bool retry_cleared_manually = false;
             uint64_t last_watch_estop_epoch = watching_estop_epoch_.load();
             Millis stopped_at_ms = 0;
             Millis upright_at_ms = 0;
+            Millis prone_fail_since = 0;
+            Millis retry_upright_since = 0;
             Millis settled_since = 0;
             Millis physical_settled_ms = 0;
             uint64_t loop_cnt = 0;
@@ -1106,9 +1196,12 @@ private:
 
             log_event("observing",
                       "\"cycle\":" + std::to_string(cycle_idx)
-                      + ",\"stable_wait_ms\":" + std::to_string(opt_.stable_wait_ms)
+                      + ",\"stable_wait_ms\":" + std::to_string(seq_cfg.stable_dwell_ms)
                       + ",\"detect_dwell_ms\":300"
-                      + ",\"stand_mode\":\"" + opt_.stand_mode + "\"");
+                      + ",\"stand_mode\":\"" + opt_.stand_mode + "\""
+                      + ",\"pitch_recovery\":" + (has_pitch_profiles ? "true" : "false")
+                      + ",\"is_retry_attempt\":" + (is_retry_attempt ? "true" : "false")
+                      + ",\"strategy\":\"" + strategy_name(active_strategy) + "\"");
 
             while (!shutdown_.load() && !cancel_requested_.load() && steady_ms() < global_deadline) {
                 next_ns += 5000000ULL; // 200 Hz
@@ -1116,23 +1209,77 @@ private:
                 const auto quat = rpy_deg_to_quat_xyzw(s.rpy_deg[0], s.rpy_deg[1], s.rpy_deg[2]);
                 Feedback fb{s.seq, s.mono_ms, s.pos, s.vel, quat};
                 const auto prone = assess_prone_support(fb, s.contact_z, standup.pre_pose());
+                const double cur_tilt = tilt(quat);
 
-                // If an operator handset STOP happened while passively watching, reset fall timer for 1 tick.
+                // If an operator handset STOP happened while passively watching:
+                // - During a normal observing cycle: reset fall timer for 1 tick.
+                // - During an opposite-side retry wait: cancel the retry immediately!
                 const uint64_t cur_estop_epoch = watching_estop_epoch_.load();
                 const bool estop_reset_tick = (last_phase == Phase::watching && cur_estop_epoch != last_watch_estop_epoch);
                 last_watch_estop_epoch = cur_estop_epoch;
+                if (is_retry_attempt && estop_reset_tick) {
+                    retry_cancelled_by_operator = true;
+                    cycle_aborted = true;
+                    log_event("opposite_retry_cancelled", "\"reason\":\"handset_stop_during_wait\"");
+                    break;
+                }
+                if (estop_reset_tick && post_fall_latched) {
+                    post_fall_latched = false;
+                    post_fall_upright_since = 0;
+                    log_event("post_fall_latch_cleared", "\"reason\":\"handset_stop\"");
+                }
 
-                // While passively watching (not yet rolling), pick left vs right mirrored
-                // roll profile based on which side the robot is lying on:
-                //   -165 < roll < 0  => right side down => right_profile (pushes FR/HR)
-                //   otherwise        => left side down or pure supine => left_profile (pushes FL/HL)
-                if (last_phase == Phase::watching && tilt(quat) >= seq_cfg.fall_tilt_deg) {
-                    const double roll_deg = s.rpy_deg[0];
-                    const bool want_right = (roll_deg < 0.0 && roll_deg > -165.0);
-                    if (want_right != using_right_profile) {
+                // Clear post-fall latch only if the robot is actually standing upright again (>= 0.25m for 500ms).
+                if (post_fall_latched && last_phase == Phase::watching) {
+                    if (cur_tilt <= 15.0 && prone.est_height_m >= 0.25) {
+                        const Millis unow = steady_ms();
+                        if (post_fall_upright_since == 0) post_fall_upright_since = unow;
+                        if (unow - post_fall_upright_since >= 500) {
+                            post_fall_latched = false;
+                            post_fall_upright_since = 0;
+                            log_event("post_fall_latch_cleared", "\"reason\":\"stood_upright\"");
+                        }
+                    } else {
+                        post_fall_upright_since = 0;
+                    }
+                }
+
+                // If operator manually righted the robot during the 2s retry wait, cancel retry cleanly.
+                if (is_retry_attempt && last_phase == Phase::watching) {
+                    if (cur_tilt < 18.0) {
+                        const Millis tnow = steady_ms();
+                        if (retry_upright_since == 0) retry_upright_since = tnow;
+                        if (tnow - retry_upright_since >= 300) {
+                            retry_cleared_manually = true;
+                            log_event("opposite_retry_cleared", "\"reason\":\"manually_righted_during_wait\"");
+                            break;
+                        }
+                    } else {
+                        retry_upright_since = 0;
+                    }
+                }
+
+                // Height-gated fall permission:
+                //   - tilt >= 35 deg: always fallen (side-lying / supine / steep dive)
+                //   - 18 <= tilt < 35 deg: only if collapsed/low (est_height_m < 0.19m; real slope
+                //     standing/climbing stays at 0.23..0.34m, so this eliminates slope false triggers!)
+                //   - post_fall_latched: keeps recovery armed after a real fall even when the torso
+                //     settles flat onto its belly (< 18 deg) with crooked/splayed legs!
+                //   - tilt < 18 deg (no prior fall): only via explicit --allow-prone-shortcut
+                const bool pitch_or_roll_fallen = (cur_tilt >= 35.0)
+                    || (has_pitch_profiles && cur_tilt >= 18.0 && prone.est_height_m < 0.19)
+                    || (has_pitch_profiles && post_fall_latched && !(cur_tilt <= 15.0 && prone.est_height_m >= 0.25))
+                    || (opt_.allow_prone_shortcut && prone.confirmed);
+
+                // While passively watching (and not locked to a forced opposite-side retry),
+                // dynamically select left_roll / right_roll / front_restore / back_restore.
+                if (!is_retry_attempt && last_phase == Phase::watching && pitch_or_roll_fallen
+                    && (cur_tilt >= seq_cfg.fall_tilt_deg || post_fall_latched)) {
+                    const RecoveryStrategy desired = select_strategy(s.rpy_deg[0], s.rpy_deg[1], cur_tilt);
+                    if (desired != active_strategy) {
                         std::lock_guard<std::mutex> glock(guard_call_mu_);
-                        using_right_profile = want_right;
-                        active_profile = using_right_profile ? &right_profile : &profile;
+                        active_strategy = desired;
+                        active_profile = profile_for(active_strategy);
                         controller_ = std::make_unique<Controller>(*active_profile, seq_cfg);
                         Commissioning checks{true, true, true, true};
                         controller_->enable(attempt_session, checks, true);
@@ -1149,7 +1296,8 @@ private:
                     Input in{};
                     in.feedback = fb;
                     in.exclusive_authority = true;
-                    in.fall_allowed = !stop_latched_.load() && !estop_reset_tick;
+                    in.fall_allowed = !stop_latched_.load() && !estop_reset_tick && pitch_or_roll_fallen;
+                    in.post_fall_latched = post_fall_latched;
                     in.prone_confirmed = prone.confirmed;
                     in.expects_progress = standup.expects_progress(now);
                     in.stand_complete = standup.complete(now);
@@ -1165,12 +1313,27 @@ private:
 
                 if (st.fall_detected && !logged_fall_detected) {
                     logged_fall_detected = true;
+                    if (last_phase == Phase::watching && cur_tilt >= seq_cfg.fall_tilt_deg && !post_fall_latched) {
+                        post_fall_latched = true;
+                    }
                     std::ostringstream ex;
                     ex << "\"fall_detected_ms\":" << st.fall_detected_ms
-                       << ",\"tilt_deg\":" << std::fixed << std::setprecision(2) << tilt(quat)
+                       << ",\"tilt_deg\":" << std::fixed << std::setprecision(2) << cur_tilt
                        << ",\"roll_deg\":" << s.rpy_deg[0]
-                       << ",\"direction\":\"" << (using_right_profile ? "right" : "left") << "\"";
+                       << ",\"pitch_deg\":" << s.rpy_deg[1]
+                       << ",\"est_height_m\":" << std::setprecision(3) << prone.est_height_m
+                       << ",\"post_fall_latched\":" << (post_fall_latched ? "true" : "false")
+                       << ",\"strategy\":\"" << strategy_name(active_strategy) << "\"";
                     log_event("fall_detected", ex.str());
+                    {
+                        std::ostringstream al;
+                        al << std::fixed << std::setprecision(1)
+                           << "[FALL] 检出跌倒 -> 策略: " << strategy_name(active_strategy)
+                           << " | tilt=" << cur_tilt << " deg, roll=" << s.rpy_deg[0]
+                           << " deg, pitch=" << s.rpy_deg[1] << " deg, h=" << std::setprecision(3) << prone.est_height_m
+                           << " m（稳定 " << (seq_cfg.stable_dwell_ms / 1000.0) << " s 后开始恢复）";
+                        alert_banner(al.str());
+                    }
                 } else if (!st.fall_detected && last_phase == Phase::watching) {
                     logged_fall_detected = false;
                 }
@@ -1180,8 +1343,8 @@ private:
                     ex << "\"from\":\"" << phase_name(last_phase) << "\""
                        << ",\"to\":\"" << phase_name(st.phase) << "\""
                        << ",\"stop\":\"" << stop_reason_name(st.stop) << "\""
-                       << ",\"direction\":\"" << (using_right_profile ? "right" : "left") << "\""
-                       << ",\"tilt_deg\":" << std::fixed << std::setprecision(2) << tilt(quat);
+                       << ",\"strategy\":\"" << strategy_name(active_strategy) << "\""
+                       << ",\"tilt_deg\":" << std::fixed << std::setprecision(2) << cur_tilt;
                     log_event("phase_changed", ex.str());
 
                     if (last_phase == Phase::watching
@@ -1192,9 +1355,26 @@ private:
                             sender_->ControlGet(SDK);
                             sdk_authority_.store(true);
                             log_event("sdk_authority_acquired", "\"mode\":\"SDK\"");
+                            alert_banner(std::string("[RECOVER] 接管 SDK 执行恢复动作: ")
+                                         + strategy_name(active_strategy)
+                                         + (is_retry_attempt ? "（换侧第 2 次尝试）" : ""));
                         }
                     }
+                    prone_fail_since = 0;
                     last_phase = st.phase;
+                }
+
+                // Fast blocked-roll detection: if all roll segments finished (entered prone_check)
+                // yet the torso bounced off an obstacle and stayed > 90 deg for 600 ms, stop cleanly!
+                if (st.phase == Phase::prone_check && is_directional_roll(active_strategy)) {
+                    if (cur_tilt > 90.0) {
+                        if (prone_fail_since == 0) prone_fail_since = now;
+                        if (now - prone_fail_since >= 600 && !stop_latched_.load()) {
+                            trigger_stop(StopReason::stall, "roll_blocked_fallback", false);
+                        }
+                    } else {
+                        prone_fail_since = 0;
+                    }
                 }
 
                 if (loop_cnt % 10 == 0) { // 20 Hz telemetry audit + ROS pub
@@ -1202,7 +1382,8 @@ private:
                     std::ostringstream ex;
                     ex << std::fixed << std::setprecision(2)
                        << "\"phase\":\"" << phase_name(st.phase) << "\""
-                       << ",\"tilt_deg\":" << tilt(quat)
+                       << ",\"tilt_deg\":" << cur_tilt
+                       << ",\"pitch_deg\":" << s.rpy_deg[1]
                        << ",\"est_height_m\":" << std::setprecision(3) << prone.est_height_m
                        << ",\"prone_confirmed\":" << (prone.confirmed ? "true" : "false")
                        << ",\"pos\":" << json_axis(s.pos);
@@ -1281,6 +1462,8 @@ private:
             const auto ev = controller_->guard().evidence();
             std::ostringstream sum;
             sum << "\"cycle\":" << cycle_idx
+                << ",\"strategy\":\"" << strategy_name(active_strategy) << "\""
+                << ",\"is_retry_attempt\":" << (is_retry_attempt ? "true" : "false")
                 << ",\"final_phase\":\"" << phase_name(last_phase) << "\""
                 << ",\"stop_reason\":\"" << stop_reason_name(ev.reason) << "\""
                 << ",\"stop_ms\":" << ev.stop_ms
@@ -1293,20 +1476,83 @@ private:
                 << ",\"tx_damping_frames\":" << tx_damping_count_.load();
             log_event("recover_summary", sum.str());
             last_rc = cycle_succeeded ? 0 : 1;
+            if (cycle_succeeded) {
+                alert_banner(std::string("[OK] 恢复起立完成（策略: ") + strategy_name(active_strategy)
+                             + "），已交还手柄力控！");
+            }
+
+            // If operator manually righted the robot during retry wait, immediately return to normal observing.
+            if (retry_cleared_manually) {
+                alert_banner("[INFO] 换侧等待期间检测到人工扶正，已取消重试并返回待命。");
+                if (!opt_.continuous || cancel_requested_.load() || shutdown_.load()) break;
+                continue;
+            }
+
+            // Single opposite-side retry when Attempt 1 (left_roll/right_roll) was blocked by an obstacle.
+            // Never retry on operator handset STOP / cancel, and never retry more than once!
+            const bool obstacle_stop = (ev.reason == StopReason::stall
+                || ev.reason == StopReason::timeout
+                || ev.reason == StopReason::fault);
+            if (cycle_aborted
+                && obstacle_stop
+                && is_directional_roll(active_strategy)
+                && !is_retry_attempt
+                && !retry_cancelled_by_operator
+                && !cancel_requested_.load()
+                && !shutdown_.load()) {
+                const auto s_now = get_hw_snapshot();
+                const auto q_now = rpy_deg_to_quat_xyzw(s_now.rpy_deg[0], s_now.rpy_deg[1], s_now.rpy_deg[2]);
+                if (tilt(q_now) >= 35.0) {
+                    forced_retry_strategy = (active_strategy == RecoveryStrategy::left_roll)
+                        ? RecoveryStrategy::right_roll
+                        : RecoveryStrategy::left_roll;
+                    has_forced_retry = true;
+                    std::ostringstream rx;
+                    rx << "\"from\":\"" << strategy_name(active_strategy) << "\""
+                       << ",\"to\":\"" << strategy_name(forced_retry_strategy) << "\""
+                       << ",\"wait_ms\":" << opt_.retry_wait_ms
+                       << ",\"first_stop_reason\":\"" << stop_reason_name(ev.reason) << "\"";
+                    log_event("scheduling_opposite_side_retry", rx.str());
+                    alert_banner(std::string("[RETRY] 单侧受阻（") + stop_reason_name(ev.reason)
+                                 + "），已切纯阻尼并归还控制，等待 "
+                                 + std::to_string(opt_.retry_wait_ms / 1000)
+                                 + " s 后换另一侧尝试（" + strategy_name(active_strategy)
+                                 + " -> " + strategy_name(forced_retry_strategy) + "）...");
+                    continue;
+                }
+            }
 
             if (!opt_.continuous || cancel_requested_.load() || shutdown_.load()) {
+                if (cycle_aborted) {
+                    alert_banner(std::string("[ALERT / SAFE_FAULT] 恢复已中止（reason=")
+                                 + stop_reason_name(ev.reason)
+                                 + "），已停在纯阻尼安全态，不无限重试！");
+                }
                 break;
             }
 
             // Continuous mode safety:
-            //   - After an abort/STOP/stall, DO NOT retry the same fall! Wait passively
+            //   - After an abort/STOP/2nd obstacle failure, DO NOT retry again! Wait passively
             //     until an operator restores the robot upright (tilt <= 15 deg, h >= 0.22m
             //     for 3.0s) before re-arming for future falls.
             //   - After a successful recovery (already verified upright 0.8s), wait 0.5s
             //     upright before re-arming for the next fall.
             if (cycle_aborted) {
                 log_event("paused_after_stop_waiting_upright",
-                          "\"detail\":\"manual_upright_3s_required_to_rearm\"");
+                          is_retry_attempt
+                              ? "\"detail\":\"second_attempt_failed_manual_upright_3s_required\""
+                              : "\"detail\":\"manual_upright_3s_required_to_rearm\"");
+                if (ev.reason == StopReason::handset || ev.reason == StopReason::cancel || retry_cancelled_by_operator) {
+                    alert_banner("[ALERT / STOP] 收到人工急停/取消信号，已切纯阻尼并归还手柄！已锁定防重试，请人工扶正站稳 3 秒后自动重新待命。");
+                } else if (is_retry_attempt) {
+                    alert_banner(std::string("[ALERT / SAFE_FAULT] 换侧第 2 次尝试仍受阻（reason=")
+                                 + stop_reason_name(ev.reason)
+                                 + "），已永久锁定纯阻尼安全态（不无限重试）！请清除障碍并人工扶正站稳 3 秒后复位。");
+                } else {
+                    alert_banner(std::string("[ALERT / SAFE_FAULT] 恢复受阻/超时（reason=")
+                                 + stop_reason_name(ev.reason)
+                                 + "），已锁定纯阻尼安全态（不无限重试）！请人工扶正站稳 3 秒后自动复位。");
+                }
             }
             const Millis required_upright_ms = cycle_aborted ? 3000 : 500;
             Millis upright_hold_since = 0;
@@ -1321,6 +1567,9 @@ private:
                     if (now - upright_hold_since >= required_upright_ms) {
                         log_event(cycle_aborted ? "rearmed_after_manual_upright" : "rearmed_after_recovery",
                                   "\"tilt_deg\":" + std::to_string(t_deg));
+                        if (cycle_aborted) {
+                            alert_banner("[REARM] 检测到人工扶正并站稳 3 秒，已解除安全锁重新进入待命监测。");
+                        }
                         break;
                     }
                 } else {
@@ -1330,6 +1579,10 @@ private:
             }
         }
         return last_rc;
+    }
+
+    void alert_banner(const std::string& msg) {
+        std::cerr << msg << std::endl;
     }
 
     void log_event(const char* event, const std::string& extra_fields, bool echo = true) {

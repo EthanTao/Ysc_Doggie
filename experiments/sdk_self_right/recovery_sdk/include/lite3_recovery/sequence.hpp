@@ -110,6 +110,7 @@ struct Input {
     StopReason stop{StopReason::none};
     bool exclusive_authority{};
     bool fall_allowed{}; // Approved initial pose and controller readiness.
+    bool post_fall_latched{}; // Latched true after a confirmed fall until robot stands upright again.
     bool expects_progress{};
     bool roll_complete{};
     bool prone_confirmed{}; // Must corroborate leg support, not just IMU level.
@@ -166,6 +167,7 @@ public:
         if (phase_ == Phase::watching) {
             const double sample_tilt = tilt(sample.attitude);
             const bool tilted_for_fall = sample_tilt >= config_.fall_tilt_deg
+                || (in.post_fall_latched && in.fall_allowed)
                 || (config_.allow_prone_shortcut && in.prone_confirmed && in.fall_allowed);
             if (!in.fall_allowed || !tilted_for_fall) {
                 base_.reset();
@@ -180,7 +182,7 @@ public:
                 }
                 if (!base_ || attitude_distance(base_->attitude, sample.attitude)>5.) base_=sample;
                 if (sample.received_ms-base_->received_ms >= config_.stable_dwell_ms) {
-                    if (config_.allow_prone_shortcut && sample_tilt < config_.supine_tilt_deg) {
+                    if (config_.allow_prone_shortcut && !in.post_fall_latched && sample_tilt < config_.supine_tilt_deg) {
                         transition(Phase::prone_check, now);
                     } else {
                         transition(Phase::rolling, now);
